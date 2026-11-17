@@ -1,0 +1,57 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Users ──────────────────────────────────────────────────────────────
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // ── Machines ───────────────────────────────────────────────────────────
+    match /machines/{machineId} {
+      allow read, write: if request.auth != null
+        && request.auth.uid == resource.data.ownerUid;
+      allow create: if request.auth != null
+        && request.auth.uid == request.resource.data.ownerUid;
+    }
+
+    // ── Sessions ───────────────────────────────────────────────────────────
+    // Owner has full access; joiners (by joinCode) get read + limited write.
+    match /sessions/{sessionId} {
+      allow read: if request.auth != null
+        && (request.auth.uid == resource.data.ownerUid
+            || request.auth.uid in resource.data.get('memberUids', []));
+
+      allow create: if request.auth != null
+        && request.auth.uid == request.resource.data.ownerUid;
+
+      allow update: if request.auth != null
+        && (request.auth.uid == resource.data.ownerUid
+            || request.auth.uid in resource.data.get('memberUids', []));
+
+      // Recordings sub-collection
+      match /recordings/{deviceId} {
+        allow read, write: if request.auth != null
+          && (request.auth.uid == get(/databases/$(database)/documents/sessions/$(sessionId)).data.ownerUid
+              || request.auth.uid in get(/databases/$(database)/documents/sessions/$(sessionId)).data.get('memberUids', []));
+      }
+    }
+
+    // ── Inference logs ─────────────────────────────────────────────────────
+    // Any authenticated user can write their own logs; read own logs only.
+    match /inference_logs/{logId} {
+      allow create: if request.auth != null
+        && request.auth.uid == request.resource.data.uid;
+      allow read: if request.auth != null
+        && request.auth.uid == resource.data.uid;
+    }
+
+    // ── Benchmarks ─────────────────────────────────────────────────────────
+    // Public read (judges); only service account writes (via Admin SDK, not client).
+    match /benchmarks/{runId} {
+      allow read: if true;
+      allow write: if false; // Admin SDK only
+    }
+  }
+}

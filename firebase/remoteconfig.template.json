@@ -1,0 +1,60 @@
+{
+  "parameters": {
+    "model_cloud_refine": {
+      "defaultValue": { "value": "gemini-3.8-flash" },
+      "description": "Cloud model for refinement step"
+    },
+    "model_cloud_fallback": {
+      "defaultValue": { "value": "gemini-3.5-flash-lite" },
+      "description": "Cloud fallback / high-volume model"
+    },
+    "prompt_version": {
+      "defaultValue": { "value": "v1" },
+      "description": "Active prompt version key (maps to /prompts/<version>_first_pass.md)"
+    },
+    "severity_thresholds": {
+      "defaultValue": {
+        "value": "{\"class_I\":{\"A\":0.71,\"B\":1.8,\"C\":4.5},\"group2_rigid\":{\"A\":1.4,\"B\":2.8,\"C\":4.5},\"group2_flexible\":{\"A\":2.3,\"B\":4.5,\"C\":7.1}}"
+      },
+      "description": "ISO 10816/20816 severity zone thresholds in mm/s RMS (JSON)"
+    },
+    "coherence_min": {
+      "defaultValue": { "value": "0.8" },
+      "description": "Minimum coherence (γ²) to trust cross-phone phase at a frequency"
+    },
+    "ambiguity_delta_p": {
+      "defaultValue": { "value": "0.2" },
+      "description": "Probability gap below which active diagnosis next-test is triggered"
+    },
+    "escalate_on_zone": {
+      "defaultValue": { "value": "[\"C\",\"D\"]" },
+      "description": "ISO severity zones that auto-trigger cloud refinement"
+    },
+    "max_on_device_calls_per_session": {
+      "defaultValue": { "value": "3" },
+      "description": "Cap on on-device inference calls per session (Android quota safety)"
+    },
+    "record_seconds": {
+      "defaultValue": { "value": "40" },
+      "description": "Default recording duration in seconds"
+    },
+    "phase_stability_threshold_deg": {
+      "defaultValue": { "value": "30" },
+      "description": "Max phase variation (°) across repeated readings before flagging looseness"
+    },
+    "gate_imbalance_max_harmonics": {
+      "defaultValue": { "value": "2" },
+      "description": "Physics gate: max harmonics count above noise floor for imbalance claim"
+    },
+    "gate_misalignment_min_2x_ratio": {
+      "defaultValue": { "value": "0.5" },
+      "description": "Physics gate: min 2x/1x ratio OR axial/radial ratio for misalignment claim"
+    }
+  },
+  "version": {
+    "versionNumber": "1",
+    "updateTime": "2026-11-15T00:00:00Z",
+    "updateUser": { "email": "ajaiswa4@charlotte.edu" },
+    "description": "Initial Remote Config — Harmonic v1"
+  }
+}

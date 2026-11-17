@@ -1,0 +1,65 @@
+# ── Secrets & Firebase configs ───────────────────────────────────────────────
+# Client configs are OK to commit (App Check + rules protect them),
+# but service-account keys and local env overrides are NOT.
+*.json.secret
+service-account*.json
+*-service-account*.json
+.env
+.env.local
+.env.*.local
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+*.log
+
+# ── Node / Web ────────────────────────────────────────────────────────────────
+node_modules/
+web/dist/
+web/.env
+web/.env.local
+.firebase/
+
+# ── Android ───────────────────────────────────────────────────────────────────
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
+
+# ── iOS ───────────────────────────────────────────────────────────────────────
+ios/Pods/
+ios/build/
+ios/*.xcworkspace/xcuserdata/
+ios/*.xcodeproj/xcuserdata/
+ios/DerivedData/
+*.ipa
+
+# ── macOS / editors ───────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/settings.json
+*.swp
+
+# ── Eval data (large) ─────────────────────────────────────────────────────────
+# Golden vectors are small JSON → committed; large recordings are not.
+eval/data/rig/**/*.bin
+eval/data/rig/**/*.csv
+eval/data/mafaulda/
