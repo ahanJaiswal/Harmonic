@@ -40,6 +40,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -62,6 +63,11 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.ExperimentalTextApi
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
@@ -70,6 +76,32 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.sin
+
+/**
+ * Overpass (highway-sign lineage) for headings, buttons and the wordmark; Atkinson
+ * Hyperlegible Next (Braille Institute, built for low-vision legibility) for reading text.
+ * Both are bundled so they work offline. Licenses: assets/licenses/.
+ */
+@OptIn(ExperimentalTextApi::class)
+private fun variable(res: Int, vararg weights: Int) = FontFamily(
+    weights.map { w ->
+        Font(res, FontWeight(w), variationSettings = FontVariation.Settings(FontVariation.weight(w)))
+    }
+)
+
+private val Display = variable(R.font.overpass_variable, 400, 600, 700, 800, 900)
+private val Body = variable(R.font.atkinson_next_variable, 400, 500, 600, 700, 800)
+
+private val HarmonicTypography = Typography().let { t ->
+    fun TextStyle.body() = copy(fontFamily = Body)
+    t.copy(
+        displayLarge = t.displayLarge.body(), displayMedium = t.displayMedium.body(), displaySmall = t.displaySmall.body(),
+        headlineLarge = t.headlineLarge.body(), headlineMedium = t.headlineMedium.body(), headlineSmall = t.headlineSmall.body(),
+        titleLarge = t.titleLarge.body(), titleMedium = t.titleMedium.body(), titleSmall = t.titleSmall.body(),
+        bodyLarge = t.bodyLarge.body(), bodyMedium = t.bodyMedium.body(), bodySmall = t.bodySmall.body(),
+        labelLarge = t.labelLarge.body(), labelMedium = t.labelMedium.body(), labelSmall = t.labelSmall.body(),
+    )
+}
 
 private val Ink = Color(0xFF0E1412)
 private val Panel = Color(0xFF17211E)
@@ -176,6 +208,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             MaterialTheme(
+                typography = HarmonicTypography,
                 colorScheme = darkColorScheme(
                     background = Ink,
                     surface = Panel,
@@ -229,7 +262,7 @@ private fun BrandHeader() {
         Mark()
         Spacer(Modifier.width(14.dp))
         Column {
-            Text("HARMONIC", color = Phosphor, fontWeight = FontWeight.Black, letterSpacing = 4.sp, fontSize = 26.sp)
+            Text("HARMONIC", color = Phosphor, fontWeight = FontWeight.Black, fontFamily = Display, letterSpacing = 4.sp, fontSize = 26.sp)
             Text("Machine health check", color = Mist, fontSize = 16.sp)
         }
     }
@@ -302,7 +335,7 @@ private fun homeNote(status: String): String? = when {
 /** Machine picture choice, size, and optional speed. Shared by Home and the host lobby. */
 @Composable
 private fun MachineSetup(model: HarmonicModel) {
-    Text("What are you checking?", color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+    Text("What are you checking?", color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
     Spacer(Modifier.height(14.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Machines.forEach { option ->
@@ -358,7 +391,7 @@ private fun MachineTile(option: MachineOption, selected: Boolean, modifier: Modi
     ) {
         Canvas(Modifier.size(52.dp)) { drawMachine(option.icon, stroke) }
         Spacer(Modifier.height(8.dp))
-        Text(option.label, color = stroke, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+        Text(option.label, color = stroke, fontSize = 17.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
     }
 }
 
@@ -428,7 +461,7 @@ private fun ChoiceTile(label: String, selected: Boolean, modifier: Modifier, onC
             .padding(horizontal = 12.dp, vertical = 14.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = if (selected) Phosphor else Paper, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+        Text(label, color = if (selected) Phosphor else Paper, fontSize = 17.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
     }
 }
 
@@ -453,7 +486,7 @@ private fun PlacementHint(text: String) {
 @Composable
 private fun Join(model: HarmonicModel) {
     var code by remember { mutableStateOf("") }
-    Text("Join another phone", color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+    Text("Join another phone", color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
     Spacer(Modifier.height(8.dp))
     Text("Type the code shown on the first phone.", color = Mist, fontSize = 16.sp)
     Spacer(Modifier.height(18.dp))
@@ -461,7 +494,7 @@ private fun Join(model: HarmonicModel) {
         value = code,
         onValueChange = { code = it.uppercase().filter { ch -> ch.isLetterOrDigit() }.take(6) },
         label = { Text("Code") },
-        textStyle = MaterialTheme.typography.headlineSmall.copy(letterSpacing = 6.sp, fontWeight = FontWeight.Bold),
+        textStyle = MaterialTheme.typography.headlineSmall.copy(letterSpacing = 6.sp, fontWeight = FontWeight.Bold, fontFamily = Display),
         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
         modifier = Modifier.fillMaxWidth(),
         colors = FieldColors,
@@ -490,7 +523,7 @@ private fun Lobby(model: HarmonicModel) {
 @Composable
 private fun HostLobby(model: HarmonicModel, live: LiveSession?) {
     val code = live?.code ?: model.code
-    Text("Add the other phones", color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+    Text("Add the other phones", color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
     Spacer(Modifier.height(6.dp))
     Text("On each phone, tap Join a phone and type this code, or scan it.", color = Mist, fontSize = 16.sp, lineHeight = 22.sp)
     Spacer(Modifier.height(16.dp))
@@ -507,7 +540,7 @@ private fun HostLobby(model: HarmonicModel, live: LiveSession?) {
         }
         Column {
             Text("Code", color = Mist, fontSize = 14.sp)
-            Text(code, color = Phosphor, fontSize = 34.sp, fontWeight = FontWeight.Black, letterSpacing = 4.sp)
+            Text(code, color = Phosphor, fontSize = 34.sp, fontWeight = FontWeight.Black, fontFamily = Display, letterSpacing = 4.sp)
         }
     }
     Spacer(Modifier.height(16.dp))
@@ -523,7 +556,7 @@ private fun HostLobby(model: HarmonicModel, live: LiveSession?) {
 @Composable
 private fun JoinerLobby(model: HarmonicModel, live: LiveSession?) {
     val uploaded = model.status.startsWith("Uploaded")
-    Text(if (uploaded) "Done on this phone" else "You're connected", color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+    Text(if (uploaded) "Done on this phone" else "You're connected", color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
     Spacer(Modifier.height(8.dp))
     Text(
         if (uploaded) "Waiting for the first phone to work out the result." else
@@ -557,7 +590,7 @@ private fun PhoneCount(live: LiveSession?) {
 @Composable
 private fun Record(model: HarmonicModel) {
     if (model.analyzing) {
-        Text("Working out the result…", color = Paper, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+        Text("Working out the result…", color = Paper, fontSize = 26.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
         Spacer(Modifier.height(16.dp))
         LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Phosphor, trackColor = Line)
         Spacer(Modifier.height(12.dp))
@@ -577,7 +610,7 @@ private fun Record(model: HarmonicModel) {
         Text("Step ${model.recordStep + 1} of 3", color = Mist, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
     }
-    Text(step, color = Phosphor, fontSize = 30.sp, fontWeight = FontWeight.Black, lineHeight = 36.sp)
+    Text(step, color = Phosphor, fontSize = 30.sp, fontWeight = FontWeight.Black, fontFamily = Display, lineHeight = 36.sp)
     Spacer(Modifier.height(8.dp))
     Text(help, color = Paper, fontSize = 17.sp, lineHeight = 24.sp)
     Spacer(Modifier.height(20.dp))
@@ -601,7 +634,7 @@ private fun Record(model: HarmonicModel) {
             },
             color = if (tapFresh) Phosphor else Mist,
             fontSize = 16.sp,
-            fontWeight = FontWeight.Bold,
+            fontWeight = FontWeight.Bold, fontFamily = Display,
         )
     }
     Spacer(Modifier.height(24.dp))
@@ -626,9 +659,9 @@ private fun Result(model: HarmonicModel) {
             .background(verdict.color, RoundedCornerShape(18.dp))
             .padding(horizontal = 20.dp, vertical = 22.dp),
     ) {
-        Text(verdict.title, color = Ink, fontSize = 36.sp, fontWeight = FontWeight.Black, lineHeight = 40.sp)
+        Text(verdict.title, color = Ink, fontSize = 36.sp, fontWeight = FontWeight.Black, fontFamily = Display, lineHeight = 40.sp)
         Spacer(Modifier.height(4.dp))
-        Text(FaultName.getValue(fault), color = Ink, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text(FaultName.getValue(fault), color = Ink, fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
     }
     Spacer(Modifier.height(20.dp))
     Text(FaultMeaning.getValue(fault), color = Paper, fontSize = 17.sp, lineHeight = 24.sp)
@@ -725,7 +758,7 @@ private fun PrimaryButton(label: String, enabled: Boolean = true, onClick: () ->
             disabledContainerColor = DisabledFill,
             disabledContentColor = DisabledText,
         ),
-    ) { Text(label, fontWeight = FontWeight.Bold, fontSize = 18.sp) }
+    ) { Text(label, fontWeight = FontWeight.Bold, fontFamily = Display, fontSize = 18.sp) }
 }
 
 @Composable
@@ -742,7 +775,7 @@ private fun SecondaryButton(
         shape = RoundedCornerShape(12.dp),
         border = BorderStroke(1.dp, Line),
         colors = ButtonDefaults.outlinedButtonColors(contentColor = Paper, disabledContentColor = Mist),
-    ) { Text(label, fontWeight = FontWeight.SemiBold, fontSize = 16.sp) }
+    ) { Text(label, fontWeight = FontWeight.Bold, fontFamily = Display, fontSize = 16.sp) }
 }
 
 @Composable
