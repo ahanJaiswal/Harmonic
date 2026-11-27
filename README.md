@@ -40,14 +40,15 @@ No single-channel analyzer can make these distinctions reliably.
 
 | Platform | Inference mode | Model | Input |
 |----------|---------------|-------|-------|
-| Android  | `PREFER_ON_DEVICE` | Gemini Nano 4 (AICore) | Spectrum PNG + features JSON |
-| Web/Chrome | `PREFER_ON_DEVICE` | Gemini Nano (Prompt API) | Spectrum PNG + features JSON |
-| iOS      | `HybridModel(primary: SystemLanguageModel)` | Apple Foundation Models | Features JSON (text) + tool calling |
-| Cloud refinement (all platforms) | `ONLY_IN_CLOUD` | `gemini-3.8-flash` | Full features + PDF manual + history |
+| Android  | `OnDeviceConfig(mode: PREFER_ON_DEVICE)` via `firebase-ai` 18.2.0 + `firebase-ai-ondevice` 16.0.0-beta08 | Gemini Nano, cloud fallback `gemini-3.5-flash-lite` | Feature JSON text |
+| iOS      | `LanguageModelSession` on `SystemLanguageModel`, then `geminiLanguageModel` | Apple Foundation Models, cloud fallback through Firebase AI Logic | Feature JSON text |
+| Cloud refinement (both apps) | Android `ONLY_IN_CLOUD`; iOS `geminiLanguageModel` | `gemini-3.8-flash` | Features plus the on-device hypothesis |
+
+Firebase Apple SDK 13 removed `HybridModel`. The iOS app implements the same prefer-on-device-then-cloud behavior with the current Foundation Models adapter (`FirebaseAILogic`). The result screen names the path that answered: on device, cloud, cloud refinement, or physics fallback.
 
 All AI inference goes through **Firebase AI Logic SDKs**. No other model API is called anywhere.
 Model names, thresholds, and prompt versions are served by **Remote Config** so we can tune
-without a release. **App Check** is enabled on all endpoints (debug tokens documented below).
+without a release. **App Check** debug tokens are registered from the log line the debug build prints. Steps are in [docs/FIREBASE_SETUP.md](docs/FIREBASE_SETUP.md).
 
 ---
 
@@ -55,38 +56,24 @@ without a release. **App Check** is enabled on all endpoints (debug tokens docum
 
 ```
 harmonic/
-├─ LICENSE                     Apache-2.0
-├─ README.md                   ← you are here
-├─ .env.example                environment / App Check debug token template
-├─ docs/
-│  └─ HARMONIC_PROJECT.md      full project bible (spec, timeline, decisions)
-├─ prompts/                    versioned prompts + JSON schemas
-│  ├─ v1_first_pass.md
+├─ LICENSE                         Apache-2.0
+├─ README.md
+├─ docs/FIREBASE_SETUP.md          beginner console steps (no project is committed)
+├─ prompts/
+│  ├─ v1_first_pass.md             system prompt, version key "v1"
 │  └─ hypothesis_schema.json
-├─ reference/
-│  ├─ harmonic_dsp/            Python DSP package (source of truth for all ports)
-│  │  ├─ sync.py               tap-sync, drift correction
-│  │  ├─ frames.py             gravity-based coordinate frame
-│  │  ├─ resample.py           non-uniform → uniform time grid
-│  │  ├─ spectrum.py           Welch PSD, amplitude spectrum
-│  │  ├─ orders.py             order extraction & interpolation
-│  │  ├─ velocity.py           acceleration → velocity, RMS, severity
-│  │  ├─ severity.py           ISO 10816/20816 zone classification
-│  │  ├─ phase.py              cross-phone phase & coherence
-│  │  ├─ features.py           feature JSON assembler
-│  │  └─ gate.py               physics gate (hallucination filter)
-│  └─ tests/                   pytest suite + golden vector validation
-├─ reference/golden/           synthetic inputs + expected feature JSON outputs
-├─ eval/                       datasets, benchmark runners, results
-├─ firebase/
-│  ├─ firestore.rules
-│  ├─ storage.rules
-│  ├─ firebase.json
-│  └─ remoteconfig.template.json
-├─ web/                        Vite + React + TypeScript dashboard
-├─ android/                    Kotlin + Jetpack Compose
-└─ ios/                        SwiftUI + SPM
+├─ reference/harmonic_dsp/         Python DSP, source of truth
+├─ reference/tests/                pytest (133 tests)
+├─ reference/scripts/generate_golden.py
+├─ reference/golden/vectors.json   inputs and expected outputs
+├─ firebase/                       rules, indexes, Remote Config, hosting placeholder
+├─ android/                        Kotlin DSP module + Jetpack Compose app
+└─ ios/
+   ├─ Packages/HarmonicDSP/        Swift package + XCTest against the golden file
+   └─ Harmonic.xcodeproj           SwiftUI app, bundle id com.harmonic.app
 ```
+
+The web dashboard from the original outline is not in this slice. Hosting in `firebase/` is a one-page placeholder so `firebase deploy` has a `public` directory.
 
 ---
 
@@ -110,35 +97,57 @@ Prompt version: v1. See `eval/results/` for full ablation tables.
 
 ---
 
-## Setup for judges
+## What is implemented
 
-### Prerequisites
-- Firebase project with App Check enabled (debug token: set `VITE_APP_CHECK_DEBUG_TOKEN` from `.env.example`)
-- Chrome 139+ with `chrome://flags/#prompt-api-for-gemini-nano-multimodal-input` enabled, ≥ 22 GB free disk, ≥ 4 GB VRAM or 16 GB RAM
-- Android: Gemini Nano 4 device (Pixel 10/11, Galaxy S25/S26, OnePlus 13/15)
-- iOS: iPhone with Apple Intelligence enabled (iPhone 15 Pro or newer)
+Both apps share one demo path:
 
-### Web / judge mode
-```bash
-cd web
-npm install
-cp ../.env.example .env.local   # fill in Firebase config + App Check debug token
-npm run dev
+1. Host a session or join with a 6-character code (QR on Android and iOS). The session document is platform-neutral, so a Pixel and an iPhone can sit in the same session.
+2. Record the accelerometer together. Android uses `SENSOR_DELAY_FASTEST`. iOS uses Core Motion and converts g to m/s².
+3. On device, the ported DSP builds the feature JSON (gravity frame, resample, Welch, orders, velocity RMS, ISO zone, and cross-phone phase when a second recording is present).
+4. Firebase AI Logic answers in plain language: imbalance, misalignment, looseness, or a bearing-wear screening hint, plus ISO zone, confidence, and a recommended action. The physics gate overwrites the zone and can reject a claim that contradicts the spectrum.
+5. Ambiguous cases and zones C/D get a cloud refinement. The screen says which path answered.
+
+**Record this phone only** runs the DSP with no Firebase project. The diagnosis is then the physics fallback.
+
+## Setup
+
+Console steps, debug-token registration, and the deploy command are in [docs/FIREBASE_SETUP.md](docs/FIREBASE_SETUP.md). Package name and bundle id are both `com.harmonic.app`.
+
+### Android (verified on this machine)
+
+Needs JDK 17+ (Android Studio’s JBR 21 works) and Android SDK 36.
+
+```powershell
+cd android
+.\gradlew.bat :dsp:test assembleDebug
 ```
-Open `http://localhost:5173`. Use **Judge Mode** (top-right) to explore pre-recorded sessions
-without needing physical phones. If your Chrome has no Nano model, calls fall back to cloud —
-that's the hybrid design working as intended.
+
+`google-services.json` is optional for that command. Put it at `android/app/google-services.json` before you want Auth, Firestore, or Gemini. Install `android/app/build/outputs/apk/debug/app-debug.apk` on a phone.
+
+### iOS (not compiled here — this checkout is Windows)
+
+On a Mac with Xcode 27:
+
+```bash
+cd ios/Packages/HarmonicDSP
+swift test
+```
+
+Then open `ios/Harmonic.xcodeproj`, let Swift Package Manager resolve Firebase 13.2+, set your team, drop in `GoogleService-Info.plist`, and run on an iPhone with Apple Intelligence. Cloud Gemini through Foundation Models needs iOS 27. The on-device system model is used when it is available; otherwise the app falls back to the cloud model, then to the physics screen.
 
 ### Python DSP reference
 ```bash
 pip install -e "reference/[dev]"
 pytest reference/tests/ -v
+python reference/scripts/generate_golden.py
 ```
+
+`generate_golden.py` rewrites `reference/golden/vectors.json` and the copies the Kotlin and Swift tests load. Do not hand-edit those copies.
 
 ### Pre-existing code / disclosures
 - Firebase starter templates and codelabs used as reference for SDK integration patterns
-- Python NumPy/SciPy/Matplotlib for reference DSP
-- Vite + React scaffold for web app
+- Python NumPy/SciPy for the reference DSP. The Kotlin and Swift ports are checked against golden vectors generated from that package
+- Vite + React scaffold was planned for a web app and is not part of this mobile slice
 - All application logic, DSP algorithms, prompts, and architecture are original work created
   during the submission period (Nov 11 – Nov 30, 2026)
 - AI coding assistants (Claude, Cursor) used for code generation under team supervision
