@@ -334,6 +334,34 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         machines = sorted
     }
 
+    /** Debug builds only: a canned two-phone misalignment result for layout and demo rehearsal. */
+    fun openSampleTwoPhoneResult() {
+        if (!BuildConfig.DEBUG) return
+        val dx = Diagnosis(
+            fault = "misalignment",
+            faultDetail = "parallel_misalignment",
+            summary = "Sample result (debug). Strong 2x with DE-NDE radial phase near 180 degrees.",
+            severityZone = "C",
+            confidence = 0.82,
+            recommendedAction = "Check that the motor and pump shafts line up, and look at the coupling for wear.",
+            hypotheses = emptyList(),
+            evidence = listOf("2x is 0.9 of 1x", "AB_H_1x phase 172 deg, coherence 0.91"),
+            nextTest = "none",
+            inferenceSource = "cloud",
+        )
+        val features = mapOf<String, Any?>(
+            "orders" to mapOf("1x" to 0.42, "2x" to 0.38, "3x" to 0.07, "harmonics_count_above_floor" to 2),
+            "phase_deg" to mapOf("AB_H_1x" to 172.0, "AB_V_1x" to 165.0),
+            "coherence" to mapOf("AB_H_1x" to 0.91, "AB_V_1x" to 0.86),
+            "axial_to_radial_ratio" to 0.62,
+        )
+        result = ShownResult(
+            dx, GateResult(true, emptyList(), emptyMap(), false), features, listOf("android", "ios"),
+        )
+        error = null
+        screen = Screen.Result
+    }
+
     fun openJoin() {
         screen = Screen.Join
         error = null
@@ -450,6 +478,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
             "nextTest" to dx.nextTest,
             "gateActions" to gate.actions.map { it.action },
             "platforms" to rows.map { it["platform"]?.toString() ?: "?" },
+            "why" to features.filterKeys { it in WHY_FEATURE_KEYS },
         )
         sessions.publishDiagnosis(live.id, payload)
         result = logToActiveMachine(
@@ -756,7 +785,9 @@ private fun diagnosisFromMap(map: Map<String, Any?>): ShownResult {
     } ?: emptyList()
     val gate = GateResult(actions.isEmpty(), actions, emptyMap(), false)
     val platforms = (map["platforms"] as? List<*>)?.map { it.toString() } ?: emptyList()
-    return ShownResult(dx, gate, emptyMap(), platforms)
+    @Suppress("UNCHECKED_CAST")
+    val why = (map["why"] as? Map<String, Any?>) ?: emptyMap()
+    return ShownResult(dx, gate, why, platforms)
 }
 
 private fun friendlyFirebaseError(t: Throwable): String {

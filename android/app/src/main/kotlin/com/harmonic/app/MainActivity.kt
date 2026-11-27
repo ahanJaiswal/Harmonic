@@ -6,6 +6,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -17,6 +22,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -70,6 +76,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -331,6 +338,9 @@ private fun Home(model: HarmonicModel) {
         Spacer(Modifier.height(8.dp))
         TextButton(onClick = { model.openLobbyPreview() }, modifier = Modifier.fillMaxWidth()) {
             Text("Preview the session lobby (debug)", color = Mist, fontSize = 14.sp)
+        }
+        TextButton(onClick = { model.openSampleTwoPhoneResult() }, modifier = Modifier.fillMaxWidth()) {
+            Text("Preview a two-phone result (debug)", color = Mist, fontSize = 14.sp)
         }
     }
 }
@@ -712,6 +722,20 @@ private fun Result(model: HarmonicModel) {
     }
     PrimaryButton("Check again") { model.home() }
     Spacer(Modifier.height(8.dp))
+    val why = remember(shown) { explain(shown.features, fault) }
+    if (why != null) {
+        var showWhy by rememberSaveable { mutableStateOf(false) }
+        TextButton(onClick = { showWhy = !showWhy }, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                if (showWhy) "Hide why" else "Why do we think so?",
+                color = Phosphor, fontSize = 16.sp, fontWeight = FontWeight.Bold, fontFamily = Display,
+            )
+        }
+        if (showWhy) {
+            WhyPanel(why)
+            Spacer(Modifier.height(8.dp))
+        }
+    }
     var details by rememberSaveable { mutableStateOf(false) }
     TextButton(onClick = { details = !details }, modifier = Modifier.fillMaxWidth()) {
         Text(if (details) "Hide details" else "Show details", color = Phosphor, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
@@ -919,6 +943,147 @@ private fun TrendBars(readings: List<Reading>) {
         Text("Oldest", color = Mist, fontSize = 13.sp)
         Text("Latest", color = Mist, fontSize = 13.sp)
     }
+}
+
+// ── Why we think so ──────────────────────────────────────────────────────────
+
+@Composable
+private fun WhyPanel(why: Why) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Panel, RoundedCornerShape(14.dp))
+            .padding(16.dp),
+    ) {
+        if (why.motion != null) {
+            Text("How the two phones moved", color = Paper, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
+            Spacer(Modifier.height(10.dp))
+            PhoneMotion(why.phaseDeg)
+            Spacer(Modifier.height(14.dp))
+        }
+        Text("When the shaking comes", color = Paper, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
+        Spacer(Modifier.height(10.dp))
+        BeatBars(why.beats, why.strongest)
+        Spacer(Modifier.height(14.dp))
+        why.lines.forEachIndexed { i, line ->
+            if (i > 0) Spacer(Modifier.height(10.dp))
+            Text(line, color = Paper, fontSize = 16.sp, lineHeight = 23.sp)
+        }
+    }
+}
+
+/**
+ * Two phones resting on a shaft's bearings, bobbing at running speed with their measured phase.
+ * Together reads as imbalance; opposite reads as the ends rocking against each other.
+ */
+@Composable
+private fun PhoneMotion(phaseDeg: Double?) {
+    val transition = rememberInfiniteTransition(label = "phones")
+    // Start a quarter turn in, at full travel, so the frame is still readable when the
+    // phone has animations turned off and the transition never advances.
+    val quarter = (Math.PI / 2).toFloat()
+    val t by transition.animateFloat(
+        initialValue = quarter,
+        targetValue = quarter + (2 * Math.PI).toFloat(),
+        animationSpec = infiniteRepeatable(tween(durationMillis = 1400, easing = LinearEasing)),
+        label = "turn",
+    )
+    val phase = Math.toRadians(phaseDeg ?: 0.0).toFloat()
+    val steady = phaseDeg == null
+    Canvas(
+        Modifier
+            .fillMaxWidth()
+            .height(120.dp)
+            .semantics {
+                contentDescription = when {
+                    steady -> "The two phones did not share a steady rhythm"
+                    abs(phaseDeg!!) <= 45 -> "Both phones move up and down together"
+                    abs(phaseDeg) >= 135 -> "The phones move in opposite directions"
+                    else -> "The phones move out of step"
+                }
+            },
+    ) {
+        val w = size.width
+        val h = size.height
+        val shaftY = h * 0.62f
+        val stroke = 3.dp.toPx()
+        val blockW = w * 0.16f
+        val blockH = h * 0.18f
+        val xs = listOf(w * 0.25f, w * 0.75f)
+        val amp = if (steady) 0f else h * 0.16f
+        val dys = listOf(-amp * sin(t), -amp * sin(t - phase))
+        // The shaft runs through both bearings, so opposite motion tilts it (rocking)
+        // and motion together lifts it level.
+        val slope = (dys[1] - dys[0]) / (xs[1] - xs[0])
+        fun shaftAt(x: Float) = shaftY + dys[0] + slope * (x - xs[0])
+        val x0 = w * 0.06f
+        val x1 = w * 0.94f
+        drawLine(Mist, Offset(x0, shaftAt(x0)), Offset(x1, shaftAt(x1)), strokeWidth = stroke, cap = StrokeCap.Round)
+        drawLine(Line, Offset(x0, shaftY), Offset(x1, shaftY), strokeWidth = 1.dp.toPx())
+        xs.forEachIndexed { i, cx ->
+            val dy = dys[i]
+            drawRoundRect(
+                Line,
+                topLeft = Offset(cx - blockW / 2f, shaftY - blockH / 2f + dy),
+                size = Size(blockW, blockH),
+                cornerRadius = CornerRadius(blockH * 0.25f),
+            )
+            // The phone lying on top of the bearing.
+            val phoneW = blockW * 0.95f
+            val phoneH = h * 0.09f
+            drawRoundRect(
+                Phosphor,
+                topLeft = Offset(cx - phoneW / 2f, shaftY - blockH / 2f - phoneH - 2.dp.toPx() + dy),
+                size = Size(phoneW, phoneH),
+                cornerRadius = CornerRadius(phoneH * 0.35f),
+            )
+        }
+    }
+    Row(Modifier.fillMaxWidth()) {
+        Text("Phone A", color = Mist, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+        Text("Phone B", color = Mist, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+    }
+}
+
+/** Strength of the once / twice / three-times-per-turn beats; the strongest is highlighted. */
+@Composable
+private fun BeatBars(beats: List<Beat>, strongest: String?) {
+    val peak = beats.maxOfOrNull { it.value }?.takeIf { it > 0 } ?: 1.0
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(110.dp)
+            .semantics {
+                contentDescription = "Shaking strength once, twice and three times per turn" +
+                    (strongest?.let { k -> ". Strongest: " + (beats.firstOrNull { it.key == k }?.label ?: k) + " per turn" } ?: "")
+            },
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        beats.forEach { b ->
+            val frac = (b.value / peak).toFloat().coerceIn(0.06f, 1f)
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxHeight(frac)
+                    .background(if (b.key == strongest) Phosphor else Line, RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp)),
+            )
+        }
+    }
+    Spacer(Modifier.height(6.dp))
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        beats.forEach { b ->
+            Text(
+                b.label,
+                color = if (b.key == strongest) Phosphor else Mist,
+                fontSize = 15.sp,
+                fontWeight = if (b.key == strongest) FontWeight.Bold else FontWeight.Normal,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+    Text("per turn of the shaft", color = Mist, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
 }
 
 private fun sureness(confidence: Double): String = when {
