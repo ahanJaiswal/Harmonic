@@ -21,6 +21,12 @@ import com.harmonic.dsp.crossPhaseCoherence
 import com.harmonic.dsp.estimateOffset
 import com.harmonic.dsp.parseRemoteConfigThresholds
 import com.harmonic.dsp.resampleToCommonGrid
+import android.os.Build
+import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -58,8 +64,19 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         private set
     var busy by mutableStateOf(false)
         private set
+    var isPreview by mutableStateOf(false)
+        private set
+    var trace by mutableStateOf(floatArrayOf())
+        private set
+    var tapCount by mutableStateOf(0)
+        private set
+    var lastTapAt by mutableStateOf(0L)
+        private set
+    var analyzing by mutableStateOf(false)
+        private set
 
     private var listenJob: Job? = null
+    private var captureJob: Job? = null
     private val shown = HashSet<String>()
 
     val sensorOk: Boolean get() = recorder.available
@@ -76,6 +93,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun host() = launchAction {
+        if (isPreview) error("Leave the debug preview before hosting a live session")
         val me = uid ?: ensureSignedIn() ?: error("Sign-in required")
         uid = me
         val c = joinCode()
@@ -86,6 +104,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun join(raw: String) = launchAction {
+        if (isPreview) error("Leave the debug preview before joining a live session")
         val me = uid ?: ensureSignedIn() ?: error("Sign-in required")
         uid = me
         val id = sessions.join(me, raw.trim().uppercase())
@@ -95,33 +114,93 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun saveMachine() = launchAction {
+        if (isPreview) return@launchAction
         val id = session?.id ?: return@launchAction
         if (!isOwner) return@launchAction
         sessions.updateMachine(id, machineType, rpmText.toDoubleOrNull() ?: 1200.0, isoClass, seconds)
     }
 
     fun startSessionRecording() = launchAction {
+        if (isPreview) {
+            recordThisPhone()
+            return@launchAction
+        }
         val id = session?.id ?: return@launchAction
         sessions.markRecording(id, seconds)
     }
 
     fun recordThisPhone() {
-        viewModelScope.launch {
+        captureJob?.cancel()
+        captureJob = viewModelScope.launch {
             error = null
+            analyzing = false
+            tapCount = 0
+            lastTapAt = 0L
+            trace = floatArrayOf()
             screen = Screen.Record
-            val analysis = capture()
-            busy = true
-            status = "Analyzing on device"
-            val features = featuresFor(analysis, null, emptyMap(), emptyMap(), 1.0)
-            val (dx, gate) = diagnoser.diagnose(features, config)
-            result = ShownResult(dx, gate, features, listOf("android"))
-            status = ""
-            busy = false
-            screen = Screen.Result
+            try {
+                val analysis = capture()
+                analyzing = true
+                busy = true
+                status = "Analyzing"
+                val features = featuresFor(analysis, null, emptyMap(), emptyMap(), 1.0)
+                val (dx, gate) = diagnoser.diagnose(features, config)
+                result = ShownResult(dx, gate, features, listOf("android"))
+                status = ""
+                busy = false
+                analyzing = false
+                screen = Screen.Result
+            } catch (_: CancellationException) {
+                recorder.stop()
+                analyzing = false
+                busy = false
+            }
         }
     }
 
+    fun cancelRecording() {
+        captureJob?.cancel()
+        recorder.stop()
+        analyzing = false
+        busy = false
+        elapsed = 0f
+        magnitude = 0f
+        trace = floatArrayOf()
+        status = ""
+        screen = if (isPreview) Screen.Lobby else Screen.Home
+    }
+
+    fun openLobbyPreview() {
+        if (!BuildConfig.DEBUG) return
+        isPreview = true
+        error = null
+        status = ""
+        uid = "preview"
+        code = "PREVIEW"
+        session = LiveSession(
+            id = "preview",
+            code = "PREVIEW",
+            ownerUid = "preview",
+            status = "lobby",
+            members = listOf(Member("preview", "android", "This phone")),
+            machineType = machineType,
+            rpm = rpmText.toDoubleOrNull() ?: 1200.0,
+            isoClass = isoClass,
+            recordSeconds = seconds,
+            diagnosis = null,
+        )
+        screen = Screen.Lobby
+    }
+
     fun home() {
+        captureJob?.cancel()
+        if (isPreview) {
+            isPreview = false
+            if (uid == "preview") uid = null
+            if (session?.id == "preview") session = null
+            code = ""
+        }
+        analyzing = false
         screen = Screen.Home
         error = null
     }
@@ -210,13 +289,28 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun capture(): PhoneAnalysis {
         elapsed = 0f
+        tapCount = 0
+        lastTapAt = 0L
+        trace = floatArrayOf()
         recorder.start()
-        val total = seconds
-        val steps = total * 10
-        repeat(steps) { i ->
-            delay(100)
-            elapsed = (i + 1) / 10f
-            magnitude = recorder.lastMagnitude
+        try {
+            val total = seconds
+            val steps = total * 10
+            repeat(steps) { i ->
+                delay(100)
+                elapsed = (i + 1) / 10f
+                magnitude = recorder.lastMagnitude
+                trace = recorder.snapshotTrace()
+                val taps = recorder.consumeTaps()
+                if (taps > 0) {
+                    tapCount += taps
+                    lastTapAt = SystemClock.elapsedRealtime()
+                    pulseTap()
+                }
+            }
+        } catch (e: CancellationException) {
+            recorder.stop()
+            throw e
         }
         val recording = recorder.stop()
         if (recording.raw.size < 32) error("Not enough samples (${recording.raw.size}). Is the accelerometer available?")
@@ -225,6 +319,18 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
             isoClass,
             config.thresholds,
         )
+    }
+
+    private fun pulseTap() {
+        val app = getApplication<Application>()
+        val vibrator = if (Build.VERSION.SDK_INT >= 31) {
+            app.getSystemService(VibratorManager::class.java)?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            app.getSystemService(Vibrator::class.java)
+        } ?: return
+        if (!vibrator.hasVibrator()) return
+        vibrator.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE))
     }
 
     private fun featuresFor(

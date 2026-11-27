@@ -166,15 +166,20 @@ fun physicsDiagnosis(features: Map<String, Any?>): Diagnosis {
     val family = faultFamily(detail, kurt)
     val conf = (top["p"] as Number).toDouble()
     val action = recommendedAction(family, zone)
+    val shortZone = when (zone) {
+        "A" -> "good"
+        "B" -> "acceptable"
+        "C" -> "unsatisfactory"
+        "D" -> "damage likely"
+        else -> zone
+    }
     val summary = buildString {
-        append("Screening (physics, no model): ")
-        append(plainFault(family))
+        append(plainFault(family).replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() })
         append(". ISO zone ")
         append(zone)
-        append(" (")
-        append(zoneDescription(zone))
-        append("). ")
-        append(action)
+        append(" — ")
+        append(shortZone)
+        append(".")
     }
     return Diagnosis(
         fault = family,
@@ -209,18 +214,18 @@ fun plainFault(family: String): String = when (family) {
 
 fun recommendedAction(family: String, zone: String): String {
     val urgency = when (zone) {
-        "D" -> "Stop the machine and inspect before the next run. "
-        "C" -> "Plan maintenance on the next outage. "
+        "D" -> "Stop and inspect before the next run. "
+        "C" -> "Plan maintenance at the next outage. "
         "B" -> "Keep running and trend the next reading. "
-        else -> "No immediate action. Trend on the next round. "
+        else -> "Keep in service. "
     }
     val specific = when (family) {
-        "imbalance" -> "Check for mass loss, buildup, or a missing balance weight. A trim balance is the usual fix."
-        "misalignment" -> "Check coupling gap and angular/offset alignment. Soft foot is worth a look."
-        "looseness" -> "Check hold-down bolts, base grout, and bearing fit. Phase that wanders between repeats points at looseness."
-        "bearing_wear" -> "Kurtosis is elevated. Confirm with a proper bearing measurement — this screen cannot resolve defect frequencies."
-        "healthy" -> "Leave the machine in service and compare against this baseline next time."
-        else -> "Repeat the reading with phones on both bearings. Relative phase is what separates these faults."
+        "imbalance" -> "Check for missing mass, buildup, or a lost balance weight."
+        "misalignment" -> "Check coupling gap, offset, and soft foot."
+        "looseness" -> "Check hold-down bolts, base grout, and bearing fit."
+        "bearing_wear" -> "Kurtosis is high — confirm with a proper bearing measurement."
+        "healthy" -> "Use this as the baseline next time."
+        else -> "Repeat with phones on both bearings; relative phase separates these faults."
     }
     return urgency + specific
 }
