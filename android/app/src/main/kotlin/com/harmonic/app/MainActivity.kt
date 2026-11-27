@@ -202,7 +202,7 @@ private fun HarmonicScreen(model: HarmonicModel) {
             .padding(horizontal = 20.dp, vertical = 16.dp),
     ) {
         BrandHeader()
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(32.dp))
         if (model.screen == Screen.Home || model.screen == Screen.Join || model.screen == Screen.Lobby) {
             model.error?.let {
                 Notice(it, Danger)
@@ -221,12 +221,16 @@ private fun HarmonicScreen(model: HarmonicModel) {
 
 @Composable
 private fun BrandHeader() {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Mark()
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(14.dp))
         Column {
-            Text("HARMONIC", color = Phosphor, fontWeight = FontWeight.Black, letterSpacing = 3.sp, fontSize = 18.sp)
-            Text("Machine health check", color = Mist, fontSize = 14.sp)
+            Text("HARMONIC", color = Phosphor, fontWeight = FontWeight.Black, letterSpacing = 4.sp, fontSize = 26.sp)
+            Text("Machine health check", color = Mist, fontSize = 16.sp)
         }
     }
 }
@@ -235,7 +239,7 @@ private fun BrandHeader() {
 private fun Mark() {
     Canvas(
         Modifier
-            .size(36.dp)
+            .size(52.dp)
             .background(Panel, CircleShape)
             .border(1.dp, Line, CircleShape),
     ) {
@@ -248,7 +252,7 @@ private fun Mark() {
             val y = mid + size.height * 0.22f * sin(i * 0.7f).toFloat()
             path.lineTo(x, y)
         }
-        drawPath(path, Phosphor, style = Stroke(width = 3.2f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        drawPath(path, Phosphor, style = Stroke(width = size.width * 0.06f, cap = StrokeCap.Round, join = StrokeJoin.Round))
     }
 }
 
