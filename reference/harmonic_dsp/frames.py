@@ -49,6 +49,11 @@ def estimate_gravity(accel_raw: np.ndarray) -> np.ndarray:
     return accel_raw.mean(axis=0)
 
 
+# Below this (about 15 deg from vertical) the default -Y axis is too close to
+# gravity to define a stable axial direction.
+UPRIGHT_FALLBACK_NORM = 0.25
+
+
 def project_axes(
     accel_raw: np.ndarray,
     g_vec: np.ndarray,
@@ -86,13 +91,20 @@ def project_axes(
     v_hat = -g_norm  # up
 
     # Axial = along shaft direction
-    if shaft_axis_device is None:
+    default_axis = shaft_axis_device is None
+    if default_axis:
         # Default: phone long edge toward shaft → device -Y axis (top of phone)
         shaft_axis_device = np.array([0.0, -1.0, 0.0])
     a_raw = np.asarray(shaft_axis_device, dtype=float)
     # Orthogonalize against V (Gram-Schmidt) to handle slight tilt
     a_hat = a_raw - np.dot(a_raw, v_hat) * v_hat
     a_norm = np.linalg.norm(a_hat)
+    if default_axis and a_norm < UPRIGHT_FALLBACK_NORM:
+        # Phone stands upright (long edge vertical), so -Y cannot be axial.
+        # Use the screen normal (device -Z) as the shaft direction instead.
+        a_raw = np.array([0.0, 0.0, -1.0])
+        a_hat = a_raw - np.dot(a_raw, v_hat) * v_hat
+        a_norm = np.linalg.norm(a_hat)
     if a_norm < 1e-6:
         raise ValueError(
             "shaft_axis_device is nearly parallel to gravity — cannot define axial direction."

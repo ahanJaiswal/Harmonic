@@ -63,7 +63,11 @@ class SessionRepository {
 
     fun listen(id: String): Flow<LiveSession> = callbackFlow {
         val reg = db.collection("sessions").document(id).addSnapshotListener { snap, err ->
-            if (err != null || snap == null || !snap.exists()) return@addSnapshotListener
+            if (err != null) {
+                close(err)
+                return@addSnapshotListener
+            }
+            if (snap == null || !snap.exists()) return@addSnapshotListener
             trySend(snap.toSession(id))
         }
         awaitClose { reg.remove() }

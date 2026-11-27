@@ -22,6 +22,7 @@ import com.harmonic.dsp.estimateOffset
 import com.harmonic.dsp.parseRemoteConfigThresholds
 import com.harmonic.dsp.resampleToCommonGrid
 import android.os.Build
+import android.util.Log
 import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -79,6 +80,9 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
     private var captureJob: Job? = null
     private val shown = HashSet<String>()
 
+    /** Sign-in state shown on Home; kept so returning Home restores the setup hint. */
+    private var authNote = if (FirebaseGate.ready) "Signing in…" else "Firebase not configured — DSP still runs"
+
     val sensorOk: Boolean get() = recorder.available
     val isOwner: Boolean get() = uid != null && uid == session?.ownerUid
 
@@ -86,8 +90,9 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         if (FirebaseGate.ready) {
             viewModelScope.launch {
                 runCatching { refreshRemoteConfig() }
-                runCatching { uid = ensureSignedIn(); status = "Signed in" }
-                    .onFailure { status = friendlyFirebaseError(it) }
+                runCatching { uid = ensureSignedIn(); authNote = "Signed in" }
+                    .onFailure { authNote = friendlyFirebaseError(it) }
+                if (screen == Screen.Home) status = authNote
             }
         }
     }
@@ -96,6 +101,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         if (isPreview) error("Leave the debug preview before hosting a live session")
         val me = uid ?: ensureSignedIn() ?: error("Sign-in required")
         uid = me
+        authNote = "Signed in"
         val c = joinCode()
         code = c
         val id = sessions.host(me, c, seconds)
@@ -107,17 +113,11 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         if (isPreview) error("Leave the debug preview before joining a live session")
         val me = uid ?: ensureSignedIn() ?: error("Sign-in required")
         uid = me
+        authNote = "Signed in"
         val id = sessions.join(me, raw.trim().uppercase())
         code = raw.trim().uppercase()
         watch(id)
         screen = Screen.Lobby
-    }
-
-    fun saveMachine() = launchAction {
-        if (isPreview) return@launchAction
-        val id = session?.id ?: return@launchAction
-        if (!isOwner) return@launchAction
-        sessions.updateMachine(id, machineType, rpmText.toDoubleOrNull() ?: 1200.0, isoClass, seconds)
     }
 
     fun startSessionRecording() = launchAction {
@@ -126,6 +126,9 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
             return@launchAction
         }
         val id = session?.id ?: return@launchAction
+        if (!isOwner) return@launchAction
+        // Save the machine first so every phone records with the host's settings.
+        sessions.updateMachine(id, machineType, rpmText.toDoubleOrNull() ?: 1200.0, isoClass, seconds)
         sessions.markRecording(id, seconds)
     }
 
@@ -147,13 +150,19 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
                 val (dx, gate) = diagnoser.diagnose(features, config)
                 result = ShownResult(dx, gate, features, listOf("android"))
                 status = ""
-                busy = false
-                analyzing = false
                 screen = Screen.Result
-            } catch (_: CancellationException) {
+            } catch (e: CancellationException) {
                 recorder.stop()
-                analyzing = false
+                throw e
+            } catch (t: Throwable) {
+                Log.w(TAG, "Single-phone reading failed", t)
+                recorder.stop()
+                status = if (isPreview) "" else authNote
+                error = "Reading failed: ${friendlyFirebaseError(t)}"
+                screen = if (isPreview) Screen.Lobby else Screen.Home
+            } finally {
                 busy = false
+                analyzing = false
             }
         }
     }
@@ -166,7 +175,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         elapsed = 0f
         magnitude = 0f
         trace = floatArrayOf()
-        status = ""
+        status = if (isPreview) "" else authNote
         screen = if (isPreview) Screen.Lobby else Screen.Home
     }
 
@@ -194,6 +203,17 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
 
     fun home() {
         captureJob?.cancel()
+        // Leaving a live session must stop listening, or a later "recording"
+        // from the host would pull this phone back into a capture.
+        listenJob?.cancel()
+        listenJob = null
+        recorder.stop()
+        busy = false
+        status = authNote
+        if (!isPreview) {
+            session = null
+            code = ""
+        }
         if (isPreview) {
             isPreview = false
             if (uid == "preview") uid = null
@@ -213,49 +233,89 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
     private fun watch(id: String) {
         listenJob?.cancel()
         listenJob = viewModelScope.launch {
-            sessions.listen(id).collect { live ->
-                session = live
-                if (live.status == "recording" && live.id !in shown) {
-                    shown.add(live.id + ":rec")
-                    captureAndUpload(live)
+            try {
+                sessions.listen(id).collect { live ->
+                    session = live
+                    if (!isOwner) {
+                        // Joiners follow the host's machine settings and duration.
+                        machineType = live.machineType
+                        rpmText = live.rpm.toInt().toString()
+                        isoClass = live.isoClass
+                        seconds = live.recordSeconds
+                    }
+                    val recKey = live.id + ":rec"
+                    if (live.status == "recording" && recKey !in shown) {
+                        shown.add(recKey)
+                        captureAndUpload(live)
+                    }
+                    val diagnosis = live.diagnosis
+                    if (live.status == "done" && diagnosis != null && screen != Screen.Result) {
+                        result = diagnosisFromMap(diagnosis)
+                        busy = false
+                        analyzing = false
+                        status = ""
+                        screen = Screen.Result
+                    }
                 }
-                val diagnosis = live.diagnosis
-                if (live.status == "done" && diagnosis != null && screen != Screen.Result) {
-                    result = diagnosisFromMap(diagnosis)
-                    screen = Screen.Result
-                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                Log.w(TAG, "Session listener failed", t)
+                error = "Lost the session: ${friendlyFirebaseError(t)}"
+                busy = false
+                analyzing = false
+                screen = Screen.Home
             }
         }
     }
 
     private suspend fun captureAndUpload(live: LiveSession) {
+        error = null
         screen = Screen.Record
-        val analysis = capture()
-        val me = uid ?: return
-        val b64 = encodeChannels(analysis.uniform.v, analysis.uniform.a, analysis.uniform.h)
-        sessions.uploadRecording(live.id, me, analysis, b64)
-        if (me == live.ownerUid) {
-            busy = true
-            status = "Waiting for the other phones"
-            repeat(40) {
-                val rows = sessions.loadRecordings(live.id)
-                if (rows.size >= live.members.size.coerceAtLeast(1)) {
-                    publishCombined(live, rows)
-                    return
+        try {
+            val analysis = capture()
+            analyzing = true
+            val me = uid ?: error("Not signed in")
+            val b64 = encodeChannels(analysis.uniform.v, analysis.uniform.a, analysis.uniform.h)
+            status = "Uploading this phone's recording"
+            sessions.uploadRecording(live.id, me, analysis, b64)
+            if (me == live.ownerUid) {
+                busy = true
+                status = "Waiting for the other phones"
+                var rows = sessions.loadRecordings(live.id)
+                val expected = live.members.size.coerceAtLeast(1)
+                var waits = 0
+                while (rows.size < expected && waits < 40) {
+                    delay(500)
+                    rows = sessions.loadRecordings(live.id)
+                    waits++
                 }
-                delay(500)
+                publishCombined(live, rows)
+            } else {
+                analyzing = false
+                status = "Uploaded. Waiting for the host's diagnosis."
+                screen = Screen.Lobby
             }
-            publishCombined(live, sessions.loadRecordings(live.id))
-        } else {
-            status = "Uploaded. Waiting for the host's diagnosis."
+        } catch (e: CancellationException) {
+            recorder.stop()
+            throw e
+        } catch (t: Throwable) {
+            Log.w(TAG, "Session capture failed", t)
+            recorder.stop()
+            busy = false
+            analyzing = false
+            status = ""
+            error = "Recording failed: ${friendlyFirebaseError(t)}"
             screen = Screen.Lobby
         }
     }
 
     private suspend fun publishCombined(live: LiveSession, rows: List<Map<String, Any?>>) {
         status = "Running DSP and the hybrid model"
-        val analyses = rows.mapNotNull { rowToAnalysis(it) }
-        val primary = analyses.firstOrNull() ?: return
+        // Host phone first so the reference clock and running speed come from it.
+        val ordered = rows.sortedByDescending { it["uid"] == live.ownerUid }
+        val analyses = ordered.mapNotNull { rowToAnalysis(it) }
+        val primary = analyses.firstOrNull() ?: error("No usable recordings were uploaded")
         val secondary = analyses.getOrNull(1)
         var phase = emptyMap<String, Double?>()
         var coh = emptyMap<String, Double?>()
@@ -284,6 +344,8 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         sessions.publishDiagnosis(live.id, payload)
         result = ShownResult(dx, gate, features, rows.map { it["platform"]?.toString() ?: "?" })
         busy = false
+        analyzing = false
+        status = ""
         screen = Screen.Result
     }
 
@@ -448,6 +510,8 @@ data class ShownResult(
 )
 
 enum class Screen { Home, Join, Lobby, Record, Result }
+
+private const val TAG = "Harmonic"
 
 private data class Cross(val phase: Map<String, Double?>, val coherence: Map<String, Double?>, val syncConf: Double)
 

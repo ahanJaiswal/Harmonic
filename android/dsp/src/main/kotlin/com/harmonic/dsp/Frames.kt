@@ -23,14 +23,15 @@ fun projectAxes(
     require(accelRaw.isNotEmpty() && accelRaw[0].size == 3)
     val gNorm = norm(gVec) + 1e-12
     val vHat = doubleArrayOf(-gVec[0] / gNorm, -gVec[1] / gNorm, -gVec[2] / gNorm)
-    val shaft = shaftAxisDevice ?: doubleArrayOf(0.0, -1.0, 0.0)
-    val dot = shaft[0] * vHat[0] + shaft[1] * vHat[1] + shaft[2] * vHat[2]
-    val aOrth = doubleArrayOf(
-        shaft[0] - dot * vHat[0],
-        shaft[1] - dot * vHat[1],
-        shaft[2] - dot * vHat[2],
-    )
-    val aNorm = norm(aOrth)
+    var shaft = shaftAxisDevice ?: doubleArrayOf(0.0, -1.0, 0.0)
+    var aOrth = orthogonalize(shaft, vHat)
+    var aNorm = norm(aOrth)
+    if (shaftAxisDevice == null && aNorm < UPRIGHT_FALLBACK_NORM) {
+        // Phone stands upright, so -Y cannot be axial. Use the screen normal (-Z).
+        shaft = doubleArrayOf(0.0, 0.0, -1.0)
+        aOrth = orthogonalize(shaft, vHat)
+        aNorm = norm(aOrth)
+    }
     if (aNorm < 1e-6) {
         throw IllegalArgumentException("shaft axis is nearly parallel to gravity")
     }
@@ -54,6 +55,14 @@ fun projectAxes(
 fun removeDc(signal: DoubleArray): DoubleArray {
     val m = SignalMath.mean(signal)
     return DoubleArray(signal.size) { signal[it] - m }
+}
+
+/** About 15 degrees from vertical; below this the default -Y axis is too close to gravity. */
+const val UPRIGHT_FALLBACK_NORM = 0.25
+
+private fun orthogonalize(shaft: DoubleArray, vHat: DoubleArray): DoubleArray {
+    val dot = shaft[0] * vHat[0] + shaft[1] * vHat[1] + shaft[2] * vHat[2]
+    return doubleArrayOf(shaft[0] - dot * vHat[0], shaft[1] - dot * vHat[1], shaft[2] - dot * vHat[2])
 }
 
 private fun norm(v: DoubleArray): Double = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])

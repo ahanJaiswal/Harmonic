@@ -300,7 +300,6 @@ private fun Lobby(model: HarmonicModel) {
         MachineForm(model)
         Spacer(Modifier.height(16.dp))
         PrimaryButton("Start recording", enabled = !model.busy) {
-            model.saveMachine()
             model.startSessionRecording()
         }
     } else {

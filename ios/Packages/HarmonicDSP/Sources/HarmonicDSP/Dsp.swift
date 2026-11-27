@@ -198,14 +198,24 @@ public func estimateGravity(_ accel: [[Double]]) -> [Double] {
     return g.map { $0 / n }
 }
 
+/// About 15 degrees from vertical; below this the default -Y axis is too close to gravity.
+public let uprightFallbackNorm = 0.25
+
 public func projectAxes(_ accel: [[Double]], gVec: [Double], shaft: [Double]? = nil) -> (v: [Double], a: [Double], h: [Double]) {
     let gNorm = sqrt(gVec[0] * gVec[0] + gVec[1] * gVec[1] + gVec[2] * gVec[2]) + 1e-12
     let vHat = [-gVec[0] / gNorm, -gVec[1] / gNorm, -gVec[2] / gNorm]
-    let shaft = shaft ?? [0, -1, 0]
-    let dot = shaft[0] * vHat[0] + shaft[1] * vHat[1] + shaft[2] * vHat[2]
-    var aOrth = [shaft[0] - dot * vHat[0], shaft[1] - dot * vHat[1], shaft[2] - dot * vHat[2]]
-    let aNorm = sqrt(aOrth[0] * aOrth[0] + aOrth[1] * aOrth[1] + aOrth[2] * aOrth[2])
-    if aNorm < 1e-6 { fatalError("shaft axis is nearly parallel to gravity") }
+    func orthogonalize(_ s: [Double]) -> ([Double], Double) {
+        let dot = s[0] * vHat[0] + s[1] * vHat[1] + s[2] * vHat[2]
+        let o = [s[0] - dot * vHat[0], s[1] - dot * vHat[1], s[2] - dot * vHat[2]]
+        return (o, sqrt(o[0] * o[0] + o[1] * o[1] + o[2] * o[2]))
+    }
+    var (aOrth, aNorm) = orthogonalize(shaft ?? [0, -1, 0])
+    if aNorm < (shaft == nil ? uprightFallbackNorm : 1e-6) {
+        // Phone stands upright (or the given axis is vertical), so use the
+        // screen normal (-Z) as the shaft direction rather than crashing.
+        (aOrth, aNorm) = orthogonalize([0, 0, -1])
+    }
+    if aNorm < 1e-6 { (aOrth, aNorm) = orthogonalize([1, 0, 0]) }
     aOrth = aOrth.map { $0 / aNorm }
     var hRaw = [
         vHat[1] * aOrth[2] - vHat[2] * aOrth[1],
