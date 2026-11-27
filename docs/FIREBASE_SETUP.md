@@ -24,7 +24,7 @@ The apps call these models, which are also the Remote Config defaults:
 | Remote Config key | Value | Used for |
 | --- | --- | --- |
 | `model_cloud_fallback` | `gemini-3.5-flash-lite` | Android `PREFER_ON_DEVICE` cloud fallback, and the iOS cloud model |
-| `model_cloud_refine` | `gemini-3.8-flash` | Second pass when the case is ambiguous or ISO zone C/D |
+| `model_cloud_refine` | `gemini-3.5-flash-lite` | Second pass when the case is ambiguous or ISO zone C/D. Keep this a fast model: the app gives every AI call 15 s |
 | `prompt_version` | `v1` | Loads `prompts/v1_first_pass.md` |
 
 ## 3. Register the Android app
@@ -52,7 +52,7 @@ Firebase Apple SDK 13 removed the older `HybridModel` / `FirebaseAI.SystemLangua
 
 1. **Build > Authentication > Sign-in method > Anonymous > Enable**. Both apps call `signInAnonymously()` before they touch Firestore.
 2. **Build > Firestore Database > Create database**. Start in **production mode**. The repo rules replace the default. Pick any region.
-3. Storage is optional for this slice (recordings sit in Firestore). If you create a bucket, the rules in `firebase/storage.rules` apply.
+3. Storage is not used (recordings sit in Firestore), and `firebase/storage.rules` denies all access. You don't need a bucket or the Blaze plan.
 
 ## 6. Deploy rules, indexes, and Remote Config
 

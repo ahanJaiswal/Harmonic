@@ -13,6 +13,9 @@ fun classifyZone(
     machineClass: String = "class_I",
     thresholds: Map<String, ZoneThresholds>? = null,
 ): String {
+    require(velocityRmsMmS.isFinite() && velocityRmsMmS >= 0.0) {
+        "Velocity RMS must be a finite, non-negative number (got $velocityRmsMmS)"
+    }
     val table = thresholds ?: ZONE_THRESHOLDS
     val t = table[machineClass] ?: ZONE_THRESHOLDS.getValue("class_I")
     return when {

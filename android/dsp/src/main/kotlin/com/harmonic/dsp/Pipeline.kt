@@ -40,6 +40,12 @@ fun analyzePhone(
     fsTarget: Double? = null,
     thresholds: Map<String, ZoneThresholds>? = null,
 ): PhoneAnalysis {
+    val keep = raw.indices.filter { i ->
+        raw[i].all { it.isFinite() } && timestamps[i].isFinite()
+    }
+    require(keep.size >= 32) { "Not enough valid samples (${keep.size})" }
+    val raw = if (keep.size == raw.size) raw else Array(keep.size) { raw[keep[it]] }
+    val timestamps = if (keep.size == timestamps.size) timestamps else DoubleArray(keep.size) { timestamps[keep[it]] }
     val g = estimateGravity(raw)
     val axes = projectAxes(raw, g)
     val v = removeDc(axes.v)
@@ -58,14 +64,14 @@ fun analyzePhone(
     val dominantIsH = vH >= vV
     val domAmp = if (dominantIsH) ampH else ampV
     val domSig = if (dominantIsH) rh.signal else rv.signal
-    val speed = findRunningSpeed(fH, domAmp, rpmNameplate)
+    val speed = if (rpmNameplate > 0) findRunningSpeed(fH, domAmp, rpmNameplate) else searchRunningSpeed(fH, domAmp, fs)
     val orders = extractOrders(fH, domAmp, speed.fRunHz)
     val ordersH = extractOrders(fH, ampH, speed.fRunHz)
     val ordersV = extractOrders(fH, ampV, speed.fRunHz)
     val ordersA = extractOrders(fH, ampA, speed.fRunHz)
     val radial = maxOf(ordersH["1x"] ?: 0.0, ordersV["1x"] ?: 0.0)
     val axialRatio = if (radial > 1e-9) (ordersA["1x"] ?: 0.0) / radial else null
-    val zone = classifyZone(maxOf(vH, vV), isoClass, thresholds)
+    val zone = classifyZone(maxOf(vH, vV, vA), isoClass, thresholds)
     val duration = if (timestamps.size >= 2) timestamps.last() - timestamps.first() else 0.0
     return PhoneAnalysis(
         fsHz = fs,
@@ -86,6 +92,32 @@ fun analyzePhone(
         spectrumFreqs = fH,
         spectrumAmp = domAmp,
     )
+}
+
+/** Lowest and highest shaft speeds searched when the RPM is unknown: 480 to 3600 RPM. */
+private const val UNKNOWN_RPM_LO_HZ = 8.0
+private const val UNKNOWN_RPM_HI_HZ = 60.0
+
+/**
+ * Running speed with no nameplate RPM: search the whole usable band, then step down to
+ * half the frequency when a strong peak sits there, so a dominant 2× is not taken for 1×.
+ */
+fun searchRunningSpeed(freqs: DoubleArray, amp: DoubleArray, fs: Double): RunningSpeed {
+    val hi = minOf(UNKNOWN_RPM_HI_HZ, fs * 0.4)
+    val lo = minOf(UNKNOWN_RPM_LO_HZ, hi / 2.0)
+    val center = (lo + hi) / 2.0
+    val fraction = (hi - lo) / (hi + lo)
+    val first = findRunningSpeed(freqs, amp, center * 60.0, fraction)
+    val half = first.fRunHz / 2.0
+    if (half >= lo) {
+        val sub = findRunningSpeed(freqs, amp, half * 60.0, 0.06)
+        val peakAt = { f: Double ->
+            val i = freqs.indices.minByOrNull { kotlin.math.abs(freqs[it] - f) } ?: 0
+            amp[i]
+        }
+        if (peakAt(sub.fRunHz) >= 0.5 * peakAt(first.fRunHz)) return sub
+    }
+    return first
 }
 
 fun crestFactor(x: DoubleArray): Double {
@@ -160,6 +192,12 @@ fun physicsDiagnosis(features: Map<String, Any?>): Diagnosis {
     if (hyps.isEmpty() || (zone == "A" || zone == "B") && twoRatio < 0.3 && harmonics < 2) {
         add("healthy", if (zone == "A" || zone == "B") 0.7 else 0.25)
     }
+    if (zone == "A") {
+        // Zone A means the overall level is low; ratios between noise-level peaks are
+        // not evidence of a fault, so lean towards healthy.
+        for (h in hyps) if (h["fault"] != "healthy") h["p"] = (h["p"] as Number).toDouble() * 0.6
+        if (hyps.none { it["fault"] == "healthy" }) add("healthy", 0.7)
+    }
     hyps.sortByDescending { (it["p"] as Number).toDouble() }
     val top = hyps.first()
     val detail = top["fault"] as String
@@ -196,9 +234,10 @@ fun physicsDiagnosis(features: Map<String, Any?>): Diagnosis {
 }
 
 fun faultFamily(detail: String, kurtosis: Double = 0.0): String = when (detail) {
-    "static_imbalance", "couple_imbalance" -> "imbalance"
-    "angular_misalignment", "parallel_misalignment" -> "misalignment"
-    "structural_looseness", "rotating_looseness" -> "looseness"
+    "static_imbalance", "couple_imbalance", "imbalance" -> "imbalance"
+    "angular_misalignment", "parallel_misalignment", "misalignment", "bent_shaft" -> "misalignment"
+    "structural_looseness", "rotating_looseness", "looseness" -> "looseness"
+    "bearing_wear" -> "bearing_wear"
     "healthy" -> "healthy"
     else -> if (kurtosis >= 5.0) "bearing_wear" else "unknown"
 }
@@ -235,7 +274,14 @@ fun hypothesisFromModel(parsed: Map<String, Any?>, features: Map<String, Any?>):
     val hyps = parsed["hypotheses"]
     val out = LinkedHashMap<String, Any?>()
     if (hyps is List<*> && hyps.isNotEmpty()) {
-        out["hypotheses"] = hyps
+        out["hypotheses"] = hyps.map { h ->
+            val m = h as? Map<*, *> ?: return@map h
+            val copy = LinkedHashMap<String, Any?>()
+            m.forEach { (k, v) -> copy[k.toString()] = v }
+            val f = copy["fault"] as? String
+            if (f != null && f !in KNOWN_FAULT_DETAILS) copy["fault"] = mapFamilyToDetail(f, passUnknown = true)
+            copy
+        }
     } else {
         val detail = (parsed["fault_detail"] as? String) ?: mapFamilyToDetail(parsed["fault"] as? String)
         val p = (parsed["confidence"] as? Number)?.toDouble() ?: 0.5
@@ -247,13 +293,14 @@ fun hypothesisFromModel(parsed: Map<String, Any?>, features: Map<String, Any?>):
     return out
 }
 
-private fun mapFamilyToDetail(family: String?): String = when (family) {
+private fun mapFamilyToDetail(family: String?, passUnknown: Boolean = false): String = when (family) {
     "imbalance" -> "static_imbalance"
     "misalignment" -> "parallel_misalignment"
     "looseness" -> "structural_looseness"
     "bearing_wear" -> "unknown"
     "healthy" -> "healthy"
-    else -> "unknown"
+    // Unrecognized names reach the gate as-is so it can reject them explicitly.
+    else -> if (passUnknown && family != null) family else "unknown"
 }
 
 data class GateSettings(
@@ -299,10 +346,17 @@ fun finalizeDiagnosis(
     val kurt = (features["kurtosis"] as? Number)?.toDouble() ?: 0.0
     val family = if (parsed == null) fallback.fault else faultFamily(detail, kurt)
     val zone = corrected["severity_zone"] as? String ?: fallback.severityZone
-    val summary = (parsed?.get("summary") as? String)?.takeIf { it.isNotBlank() } ?: fallback.summary
-    val action = (parsed?.get("recommended_action") as? String)?.takeIf { it.isNotBlank() }
+    // The model's summary, action and confidence describe ITS top fault. If the gate
+    // rejected that fault, showing them next to a different fault contradicts itself.
+    @Suppress("UNCHECKED_CAST")
+    val modelHyps = (hypothesis["hypotheses"] as? List<Map<String, Any?>>).orEmpty()
+    val modelTop = modelHyps.maxByOrNull { (it["p"] as? Number)?.toDouble() ?: 0.0 }?.get("fault") as? String
+    val overruled = parsed != null && (top == null || modelTop == null ||
+        faultFamily(modelTop, kurt) != family)
+    val summary = (parsed?.get("summary") as? String)?.takeIf { it.isNotBlank() && !overruled } ?: fallback.summary
+    val action = (parsed?.get("recommended_action") as? String)?.takeIf { it.isNotBlank() && !overruled }
         ?: recommendedAction(family, zone)
-    val confidence = (top?.get("p") as? Number)?.toDouble()
+    val confidence = if (top == null) fallback.confidence else (top["p"] as? Number)?.toDouble()
         ?: (parsed?.get("confidence") as? Number)?.toDouble()
         ?: fallback.confidence
     val evidence = ((parsed?.get("evidence") as? List<*>)?.map { it.toString() } ?: fallback.evidence)

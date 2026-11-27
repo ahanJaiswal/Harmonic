@@ -1,0 +1,6 @@
+# Versions golden/vectors.json is verified against (all reference tests pass with these). The Android and iOS golden tests
+# compare against those numbers, and newer SciPy releases can shift filter and Welch
+# results in the last digits. Regenerate goldens only in an environment built from this file:
+#   python -m venv .venv-golden && .venv-golden/Scripts/pip install -r requirements-golden.txt -e .
+numpy==2.5.4
+scipy==1.18.1

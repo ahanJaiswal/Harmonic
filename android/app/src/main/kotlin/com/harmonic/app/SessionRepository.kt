@@ -29,7 +29,7 @@ data class LiveSession(
 class SessionRepository {
     private val db: FirebaseFirestore get() = Firebase.firestore
 
-    suspend fun host(uid: String, code: String, configSeconds: Int): String {
+    suspend fun host(uid: String, code: String, type: String, rpm: Double, isoClass: String, seconds: Int): String {
         val id = db.collection("sessions").document().id
         val doc = mapOf(
             "ownerUid" to uid,
@@ -37,8 +37,11 @@ class SessionRepository {
             "memberUids" to listOf(uid),
             "members" to mapOf(uid to mapOf("platform" to "android", "name" to "Android-${uid.takeLast(4)}")),
             "status" to "lobby",
-            "machine" to mapOf("type" to "fan", "rpmNameplate" to 1200.0, "isoClass" to "class_I", "mounting" to "rigid"),
-            "recordSeconds" to configSeconds,
+            "machine" to mapOf(
+                "type" to type, "rpmNameplate" to rpm, "isoClass" to isoClass,
+                "mounting" to if (isoClass.contains("flexible")) "flexible" else "rigid",
+            ),
+            "recordSeconds" to seconds,
             "createdAt" to FieldValue.serverTimestamp(),
         )
         db.collection("sessions").document(id).set(doc).await()
@@ -76,7 +79,10 @@ class SessionRepository {
     suspend fun updateMachine(id: String, type: String, rpm: Double, isoClass: String, seconds: Int) {
         db.collection("sessions").document(id).update(
             mapOf(
-                "machine" to mapOf("type" to type, "rpmNameplate" to rpm, "isoClass" to isoClass, "mounting" to "rigid"),
+                "machine" to mapOf(
+                    "type" to type, "rpmNameplate" to rpm, "isoClass" to isoClass,
+                    "mounting" to if (isoClass.contains("flexible")) "flexible" else "rigid",
+                ),
                 "recordSeconds" to seconds,
             )
         ).await()
@@ -148,9 +154,10 @@ class SessionRepository {
             status = getString("status") ?: "lobby",
             members = members,
             machineType = machine["type"]?.toString() ?: "fan",
-            rpm = (machine["rpmNameplate"] as? Number)?.toDouble() ?: 1200.0,
+            // 0 means the host left the RPM blank.
+            rpm = (machine["rpmNameplate"] as? Number)?.toDouble() ?: 0.0,
             isoClass = machine["isoClass"]?.toString() ?: "class_I",
-            recordSeconds = (get("recordSeconds") as? Number)?.toInt() ?: 12,
+            recordSeconds = (get("recordSeconds") as? Number)?.toInt() ?: DEFAULT_SECONDS,
             diagnosis = diagnosis,
         )
     }

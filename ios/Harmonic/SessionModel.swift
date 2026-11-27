@@ -35,9 +35,10 @@ final class SessionModel: ObservableObject {
     private var sessionId: String?
     private var owner = false
     private var listener: ListenerRegistration?
-    private let db = Firestore.firestore()
+    // Lazy so the app still launches (DSP-only) when FirebaseApp was never configured.
+    private lazy var db = Firestore.firestore()
     private var cloudModel = "gemini-3.5-flash-lite"
-    private var refineModel = "gemini-3.8-flash"
+    private var refineModel = "gemini-3.5-flash-lite"
 
     func prepare() async {
         guard FirebaseGate.ready else { return }
@@ -50,7 +51,7 @@ final class SessionModel: ObservableObject {
         settings.minimumFetchInterval = 60
         rc.configSettings = settings
         rc.setDefaults([
-            "model_cloud_refine": "gemini-3.8-flash" as NSObject,
+            "model_cloud_refine": "gemini-3.5-flash-lite" as NSObject,
             "model_cloud_fallback": "gemini-3.5-flash-lite" as NSObject,
             "record_seconds": 12 as NSObject,
         ])
@@ -125,7 +126,7 @@ final class SessionModel: ObservableObject {
         try? await db.collection("sessions").document(id).updateData([
             "status": "recording",
             "recordSeconds": seconds,
-            "machine": ["type": machine, "rpmNameplate": Double(rpm) ?? 1200, "isoClass": iso, "mounting": "rigid"],
+            "machine": ["type": machine, "rpmNameplate": Double(rpm) ?? 0, "isoClass": iso, "mounting": "rigid"],
         ])
     }
 
@@ -173,8 +174,9 @@ final class SessionModel: ObservableObject {
         }
         motion.stopAccelerometerUpdates()
         let raw = samples.map { [$0.x, $0.y, $0.z] }
-        let ts = samples.map(\.t)
-        return analyzePhone(raw: raw, timestamps: ts, rpmNameplate: Double(rpm) ?? 1200, isoClass: iso)
+        let ts = samples.map { $0.t }
+        // 0 means unknown: the DSP searches the whole speed range.
+        return analyzePhone(raw: raw, timestamps: ts, rpmNameplate: Double(rpm) ?? 0, isoClass: iso)
     }
 
     private func upload(_ analysis: PhoneAnalysis) async {
@@ -212,8 +214,20 @@ final class SessionModel: ObservableObject {
         }
         status = "Running DSP and the hybrid model"
         let platforms = snap?.documents.compactMap { $0.data()["platform"] as? String } ?? ["ios"]
-        let first = snap?.documents.first.flatMap { row($0.data()) }
-        let analysis = first ?? await capture()
+        // Every phone counts: start from the host's own recording, then take the worst
+        // severity any phone measured.
+        let docs = snap?.documents ?? []
+        let mine = docs.first { ($0.data()["uid"] as? String) == uid } ?? docs.first
+        let first = mine.flatMap { row($0.data()) }
+        // `await` is not allowed inside the autoclosure on the right of `??`.
+        var analysis: PhoneAnalysis
+        if let first {
+            analysis = first
+        } else {
+            analysis = await capture()
+        }
+        let zones = docs.compactMap { $0.data()["zone"] as? String } + [analysis.severityZone]
+        analysis.severityZone = zones.max() ?? analysis.severityZone
         await finish(analysis, other: nil, platforms: platforms, publish: true)
     }
 
@@ -290,7 +304,7 @@ final class SessionModel: ObservableObject {
 
     private func featureJSON(_ analysis: PhoneAnalysis) -> String {
         let payload: [String: Any] = [
-            "machine": ["type": machine, "rpm_nameplate": Double(rpm) ?? 1200, "mounting": "rigid", "iso_class": iso],
+            "machine": ["type": machine, "rpm_nameplate": Double(rpm) ?? analysis.runningSpeedHz * 60, "mounting": "rigid", "iso_class": iso],
             "sampling": ["fs_hz": [analysis.fsHz], "duration_s": analysis.durationS, "band_limit_hz": analysis.fsHz / 2],
             "running_speed_hz": analysis.runningSpeedHz,
             "overall_velocity_mm_s": ["A_H": analysis.velocityH, "A_V": analysis.velocityV, "A_A": analysis.velocityA],
@@ -313,7 +327,9 @@ final class SessionModel: ObservableObject {
             let picked = (analysis.orders["2x"] ?? 0) > (analysis.orders["1x"] ?? 0) ? "misalignment" : (analysis.kurtosis >= 5 ? "bearing_wear" : "imbalance")
             return ("Screening from the on-device DSP. ISO zone \(zone).", picked, zone, 0.55, recommendedAction(family: picked, zone: zone), "physics_fallback")
         }
-        let fault = obj["fault"] as? String ?? "unknown"
+        // The model may answer with a family ("misalignment") or a detail
+        // ("parallel_misalignment"); show the family either way.
+        let fault = faultFamily(obj["fault"] as? String ?? "unknown", kurtosis: analysis.kurtosis)
         return (
             obj["summary"] as? String ?? "",
             fault,

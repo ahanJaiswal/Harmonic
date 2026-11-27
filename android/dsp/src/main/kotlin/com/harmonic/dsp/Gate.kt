@@ -23,6 +23,12 @@ private fun numOr(map: Map<*, *>?, key: String, fallback: Double = 0.0): Double 
     }
 }
 
+/** fault_detail values allowed by prompts/hypothesis_schema.json. */
+val KNOWN_FAULT_DETAILS = setOf(
+    "static_imbalance", "couple_imbalance", "angular_misalignment", "parallel_misalignment",
+    "structural_looseness", "rotating_looseness", "bent_shaft", "resonance", "healthy", "unknown",
+)
+
 @Suppress("UNCHECKED_CAST")
 fun physicsGate(
     hypothesis: Map<String, Any?>,
@@ -42,9 +48,12 @@ fun physicsGate(
     }
 
     val rawHyps = hypothesis["hypotheses"] as? List<*> ?: emptyList<Any?>()
-    val hypList = rawHyps.map { item ->
+    // Malformed model output must not crash the gate: skip non-objects, clamp p to [0, 1].
+    val hypList = rawHyps.filterIsInstance<Map<*, *>>().map { item ->
         val copy = LinkedHashMap<String, Any?>()
-        (item as Map<*, *>).forEach { (k, v) -> copy[k.toString()] = v }
+        item.forEach { (k, v) -> copy[k.toString()] = v }
+        val p = (copy["p"] as? Number)?.toDouble()?.takeIf { it.isFinite() } ?: 0.0
+        copy["p"] = p.coerceIn(0.0, 1.0)
         copy
     }
     var severity = hypothesis["severity_zone"] as? String ?: "A"
@@ -78,6 +87,12 @@ fun physicsGate(
         val p = (hyp0["p"] as? Number)?.toDouble() ?: 0.0
         var hyp: Map<String, Any?> = hyp0
         var keep = true
+
+        if (fault !in KNOWN_FAULT_DETAILS) {
+            log("REJECT", fault, "'$fault' is not one of the fault names the schema allows.")
+            escalate = true
+            keep = false
+        }
 
         if (fault == "static_imbalance" || fault == "couple_imbalance") {
             if (amp1 < amp2 && amp2 > 1e-6) {

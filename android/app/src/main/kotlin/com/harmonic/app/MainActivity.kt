@@ -3,6 +3,7 @@ package com.harmonic.app
 import android.os.Bundle
 import android.os.SystemClock
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -49,6 +50,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,6 +58,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -230,10 +233,21 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onStop() {
+        super.onStop()
+        if (!isChangingConfigurations) model.onAppBackgrounded()
+    }
 }
 
 @Composable
 private fun HarmonicScreen(model: HarmonicModel) {
+    BackHandler(enabled = model.screen != Screen.Home) {
+        when (model.screen) {
+            Screen.Record -> if (!model.analyzing) model.cancelRecording()
+            else -> model.home()
+        }
+    }
     Column(
         Modifier
             .fillMaxSize()
@@ -316,7 +330,7 @@ private fun Home(model: HarmonicModel) {
         MachineSetup(model, if (model.machines.isEmpty()) "What are you checking?" else "Check something new")
     }
     Spacer(Modifier.height(20.dp))
-    PlacementHint("Lay the phone flat on the machine, screen up, close to the motor or a bearing.")
+    PlacementHint("Lay the phone flat on the machine, screen up, close to the motor or a bearing, with its top edge pointing along the shaft.")
     Spacer(Modifier.height(20.dp))
     PrimaryButton("Start check", enabled = model.sensorOk) { model.recordThisPhone() }
     if (!model.sensorOk) {
@@ -568,7 +582,7 @@ private fun HostLobby(model: HarmonicModel, live: LiveSession?) {
     Spacer(Modifier.height(24.dp))
     MachineSetup(model)
     Spacer(Modifier.height(20.dp))
-    PlacementHint("Lay every phone flat on the machine, screen up. Spread them out: one near the motor, one near the far bearing.")
+    PlacementHint("Lay every phone flat on the machine, screen up, top edge pointing along the shaft. Spread them out: one near the motor, one near the far bearing.")
     Spacer(Modifier.height(20.dp))
     PrimaryButton("Start check on all phones", enabled = !model.busy) { model.startSessionRecording() }
 }
@@ -609,6 +623,11 @@ private fun PhoneCount(live: LiveSession?) {
 
 @Composable
 private fun Record(model: HarmonicModel) {
+    val view = LocalView.current
+    DisposableEffect(view) {
+        view.keepScreenOn = true
+        onDispose { view.keepScreenOn = false }
+    }
     if (model.analyzing) {
         Text("Working out the result…", color = Paper, fontSize = 26.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
         Spacer(Modifier.height(16.dp))
@@ -708,7 +727,7 @@ private fun Result(model: HarmonicModel) {
     )
     Spacer(Modifier.height(20.dp))
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(sureness(dx.confidence), color = Paper, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        Text(sureness(dx.confidence, dx.inferenceSource), color = Paper, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
         SourceBadge(dx.inferenceSource)
     }
     Spacer(Modifier.height(24.dp))
@@ -749,7 +768,10 @@ private fun Result(model: HarmonicModel) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             DetailLine("ISO 10816 zone", "${dx.severityZone} (${IsoLabel[dx.severityZone] ?: "?"})")
-            DetailLine("Confidence", "${(dx.confidence * 100).toInt()}%")
+            DetailLine(
+                "Confidence",
+                if (dx.inferenceSource == "physics_fallback") "rough estimate" else "${(dx.confidence * 100).toInt()}%",
+            )
             DetailLine("Fault code", dx.faultDetail.replace('_', ' '))
             if (shown.platforms.isNotEmpty()) DetailLine("Phones", shown.platforms.joinToString())
             if (dx.summary.isNotBlank()) Text(dx.summary, color = Paper, fontSize = 15.sp, lineHeight = 21.sp)
@@ -1086,7 +1108,8 @@ private fun BeatBars(beats: List<Beat>, strongest: String?) {
     Text("per turn of the shaft", color = Mist, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
 }
 
-private fun sureness(confidence: Double): String = when {
+private fun sureness(confidence: Double, source: String): String = when {
+    source == "physics_fallback" -> "Rough estimate"
     confidence >= 0.75 -> "Sure"
     confidence >= 0.5 -> "Fairly sure"
     else -> "Not sure. Check again."

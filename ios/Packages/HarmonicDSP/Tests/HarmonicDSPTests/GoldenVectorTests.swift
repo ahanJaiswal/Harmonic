@@ -1,5 +1,6 @@
 import XCTest
-import HarmonicDSP
+// @testable: checkButter uses the internal SignalMath.butterHighpass.
+@testable import HarmonicDSP
 
 final class GoldenVectorTests: XCTestCase {
     func testGoldenVectors() throws {

@@ -17,10 +17,13 @@ import com.harmonic.dsp.GateSettings
 import com.harmonic.dsp.featuresToJson
 import com.harmonic.dsp.finalizeDiagnosis
 import com.harmonic.dsp.needsCloudRefinement
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeout
 
 data class HarmonicConfig(
-    val cloudRefineModel: String = "gemini-3.8-flash",
+    val cloudRefineModel: String = "gemini-3.5-flash-lite",
     val cloudFallbackModel: String = "gemini-3.5-flash-lite",
     val promptVersion: String = "v1",
     val recordSeconds: Int = DEFAULT_SECONDS,
@@ -33,6 +36,11 @@ class HybridDiagnoser(
     private val prompts: Map<String, String>,
 ) {
     private var onDeviceCalls = 0
+
+    /** Call at the start of each new check; the on-device cap counts calls within one check. */
+    fun newCheck() {
+        onDeviceCalls = 0
+    }
 
     @OptIn(PublicPreviewAPI::class)
     suspend fun diagnose(features: Map<String, Any?>, config: HarmonicConfig): Pair<Diagnosis, GateResult> {
@@ -84,29 +92,46 @@ class HybridDiagnoser(
         mode: InferenceMode,
     ): ModelReply {
         return try {
-            val model = Firebase.ai(backend = GenerativeBackend.googleAI()).generativeModel(
-                modelName = modelName,
-                systemInstruction = com.google.firebase.ai.type.content { text(system) },
-                generationConfig = generationConfig { responseMimeType = "application/json" },
-                onDeviceConfig = OnDeviceConfig(mode = mode),
-            )
-            val response = model.generateContent(user)
-            val source = when (response.inferenceSource) {
-                InferenceSource.ON_DEVICE -> "on_device"
-                InferenceSource.IN_CLOUD -> "cloud"
-                else -> if (mode == InferenceMode.ONLY_IN_CLOUD) "cloud" else "cloud"
-            }
-            ModelReply(response.text, source)
+            withTimeout(AI_TIMEOUT_MS) { callModel(modelName, system, user, mode) }
+        } catch (t: TimeoutCancellationException) {
+            Log.w(TAG, "Hybrid inference timed out after ${AI_TIMEOUT_MS / 1000}s ($mode, $modelName)")
+            ModelReply(null, "physics_fallback")
+        } catch (t: CancellationException) {
+            throw t
         } catch (t: Throwable) {
             Log.w(TAG, "Hybrid inference failed ($mode, $modelName)", t)
             ModelReply(null, "physics_fallback")
         }
     }
 
+    @OptIn(PublicPreviewAPI::class)
+    private suspend fun callModel(
+        modelName: String,
+        system: String,
+        user: String,
+        mode: InferenceMode,
+    ): ModelReply {
+        val model = Firebase.ai(backend = GenerativeBackend.googleAI()).generativeModel(
+            modelName = modelName,
+            systemInstruction = com.google.firebase.ai.type.content { text(system) },
+            generationConfig = generationConfig { responseMimeType = "application/json" },
+            onDeviceConfig = OnDeviceConfig(mode = mode),
+        )
+        val response = model.generateContent(user)
+        val source = when (response.inferenceSource) {
+            InferenceSource.ON_DEVICE -> "on_device"
+            else -> "cloud"
+        }
+        return ModelReply(response.text, source)
+    }
+
     private data class ModelReply(val text: String?, val source: String)
 
     companion object {
         private const val TAG = "Harmonic"
+
+        /** Longest any single AI call may take before the app keeps the answer it has. */
+        const val AI_TIMEOUT_MS = 15_000L
         const val DEFAULT_PROMPT = "You are Harmonic, a vibration analyst. Reply with JSON only."
     }
 }

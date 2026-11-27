@@ -1,24 +1,12 @@
 rules_version = '2';
 
+// Neither the Android nor the iOS app uses Cloud Storage: per-phone recordings
+// live in Firestore at sessions/{id}/recordings/{uid}. Deny everything until a
+// feature actually needs a bucket, then add narrowly scoped rules for it.
 service firebase.storage {
   match /b/{bucket}/o {
-
-    // ── Recordings ─────────────────────────────────────────────────────────
-    // Only session members can read/write recordings.
-    // (Session membership is checked via Firestore; simplified here — tighten post-hackathon.)
-    match /recordings/{sessionId}/{deviceId} {
-      allow read, write: if request.auth != null;
-    }
-
-    // ── Spectra (PNG for Nano) ──────────────────────────────────────────────
-    match /spectra/{sessionId}/{file} {
-      allow read, write: if request.auth != null;
-    }
-
-    // ── Machine manuals (PDF) ──────────────────────────────────────────────
-    match /manuals/{machineId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null; // owner only — tighten post-hackathon
+    match /{allPaths=**} {
+      allow read, write: if false;
     }
   }
 }

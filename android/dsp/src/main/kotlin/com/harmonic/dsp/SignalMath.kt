@@ -98,21 +98,63 @@ internal object SignalMath {
             x.copyInto(re)
             fftRadix2(re, im)
         } else {
-            for (k in 0 until n) {
-                var sr = 0.0
-                var si = 0.0
-                val base = -2.0 * PI * k / n
-                for (t in 0 until n) {
-                    val ang = base * t
-                    sr += x[t] * cos(ang)
-                    si += x[t] * sin(ang)
-                }
-                re[k] = sr
-                im[k] = si
-            }
+            x.copyInto(re)
+            bluestein(re, im)
         }
         val m = n / 2 + 1
         return re.copyOf(m) to im.copyOf(m)
+    }
+
+    /**
+     * In-place DFT of any length via Bluestein's chirp-z transform, using power-of-two
+     * FFTs. Same result as the direct O(n²) sum, in O(n log n).
+     */
+    private fun bluestein(re: DoubleArray, im: DoubleArray) {
+        val n = re.size
+        var m = 1
+        while (m < 2 * n - 1) m = m shl 1
+        // Chirp w_k = exp(-iπk²/n); k² is reduced mod 2n to keep the angle accurate.
+        val wRe = DoubleArray(n)
+        val wIm = DoubleArray(n)
+        val twoN = 2L * n
+        for (k in 0 until n) {
+            val kk = (k.toLong() * k) % twoN
+            val ang = -PI * kk / n
+            wRe[k] = cos(ang)
+            wIm[k] = sin(ang)
+        }
+        val aRe = DoubleArray(m)
+        val aIm = DoubleArray(m)
+        for (k in 0 until n) {
+            aRe[k] = re[k] * wRe[k] - im[k] * wIm[k]
+            aIm[k] = re[k] * wIm[k] + im[k] * wRe[k]
+        }
+        val bRe = DoubleArray(m)
+        val bIm = DoubleArray(m)
+        bRe[0] = wRe[0]
+        bIm[0] = -wIm[0]
+        for (k in 1 until n) {
+            bRe[k] = wRe[k]
+            bIm[k] = -wIm[k]
+            bRe[m - k] = wRe[k]
+            bIm[m - k] = -wIm[k]
+        }
+        fftRadix2(aRe, aIm)
+        fftRadix2(bRe, bIm)
+        for (k in 0 until m) {
+            val r = aRe[k] * bRe[k] - aIm[k] * bIm[k]
+            val i = aRe[k] * bIm[k] + aIm[k] * bRe[k]
+            // Conjugate before the forward FFT so the transform below is an inverse.
+            aRe[k] = r
+            aIm[k] = -i
+        }
+        fftRadix2(aRe, aIm)
+        for (k in 0 until n) {
+            val cr = aRe[k] / m
+            val ci = -aIm[k] / m
+            re[k] = cr * wRe[k] - ci * wIm[k]
+            im[k] = cr * wIm[k] + ci * wRe[k]
+        }
     }
 
     private fun fftRadix2(re: DoubleArray, im: DoubleArray) {

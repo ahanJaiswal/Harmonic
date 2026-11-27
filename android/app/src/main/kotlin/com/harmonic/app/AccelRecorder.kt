@@ -128,6 +128,13 @@ data class Recording(
     val durationS: Double,
 )
 
+/** Longest pause between consecutive samples, in seconds. */
+fun Recording.longestGapS(): Double {
+    var gap = 0.0
+    for (i in 1 until timestamps.size) gap = maxOf(gap, timestamps[i] - timestamps[i - 1])
+    return gap
+}
+
 fun Recording.analyze(
     rpm: Double,
     isoClass: String,

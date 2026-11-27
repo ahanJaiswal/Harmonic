@@ -22,7 +22,7 @@ fun crossPhaseCoherence(
     require(signalA.size == signalB.size) {
         "signal lengths differ: ${signalA.size} vs ${signalB.size}"
     }
-    val nps = (nperseg ?: SignalMath.autoNperseg(fs, signalA.size)).coerceAtMost(signalA.size)
+    val nps = (nperseg ?: coherenceNperseg(signalA.size)).coerceAtMost(signalA.size)
     val nov = noverlap ?: (nps / 2)
     val (freqs, xy) = SignalMath.welchCsd(signalA, signalB, fs, nps, nov)
     val (_, xx) = SignalMath.welchPsd(signalA, fs, nps, nov)
@@ -47,6 +47,17 @@ fun crossPhaseCoherence(
     val phase = Math.toDegrees(atan2(im[idx], re[idx]))
     val trusted = gamma >= coherenceMin
     return PhaseResult(if (trusted) phase else null, gamma, fActual, trusted)
+}
+
+/**
+ * Default Welch segment for coherence: the largest power of two that still leaves about
+ * seven half-overlapped segments. With a single segment, magnitude-squared coherence is
+ * 1.0 by construction, so phase taken from pure noise would look trusted.
+ */
+fun coherenceNperseg(length: Int): Int {
+    var n = 32
+    while (n * 2 <= length / 4) n *= 2
+    return minOf(n, length).coerceAtLeast(1)
 }
 
 fun phaseStability(phasesDeg: List<Double?>): Double? {

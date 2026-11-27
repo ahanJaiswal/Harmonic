@@ -171,8 +171,40 @@ public struct PhaseResult {
     public var trusted: Bool
 }
 
+/// Default Welch segment for coherence: about seven half-overlapped segments. With a single
+/// segment, magnitude-squared coherence is 1.0 by construction, so phase from noise looks trusted.
+public func coherenceNperseg(_ length: Int) -> Int {
+    var n = 32
+    while n * 2 <= length / 4 { n *= 2 }
+    return max(1, min(n, length))
+}
+
+/// Running speed when the RPM is unknown: search 480 to 3600 RPM, then step down to half the
+/// frequency when a strong peak sits there, so a dominant 2x is not taken for 1x.
+public func searchRunningSpeed(freqs: [Double], amp: [Double], fs: Double) -> RunningSpeed {
+    let hi = min(60.0, fs * 0.4)
+    let lo = min(8.0, hi / 2)
+    let center = (lo + hi) / 2
+    let first = findRunningSpeed(freqs: freqs, amp: amp, rpmNameplate: center * 60, searchFraction: (hi - lo) / (hi + lo))
+    let half = first.fRunHz / 2
+    guard half >= lo, !freqs.isEmpty else { return first }
+    let sub = findRunningSpeed(freqs: freqs, amp: amp, rpmNameplate: half * 60, searchFraction: 0.06)
+    func peak(_ f: Double) -> Double {
+        var best = 0
+        for i in freqs.indices where abs(freqs[i] - f) < abs(freqs[best] - f) { best = i }
+        return amp[best]
+    }
+    return peak(sub.fRunHz) >= 0.5 * peak(first.fRunHz) ? sub : first
+}
+
+/// fault_detail values allowed by prompts/hypothesis_schema.json.
+public let knownFaultDetails: Set<String> = [
+    "static_imbalance", "couple_imbalance", "angular_misalignment", "parallel_misalignment",
+    "structural_looseness", "rotating_looseness", "bent_shaft", "resonance", "healthy", "unknown",
+]
+
 public func crossPhaseCoherence(signalA: [Double], signalB: [Double], fs: Double, fTargetHz: Double, nperseg: Int? = nil, noverlap: Int? = nil, coherenceMin: Double = 0.8) -> PhaseResult {
-    let nps = min(nperseg ?? SignalMath.autoNperseg(fs: fs, length: signalA.count), signalA.count)
+    let nps = min(nperseg ?? coherenceNperseg(signalA.count), signalA.count)
     let nov = noverlap ?? nps / 2
     let xy = SignalMath.welchCsd(signalA, signalB, fs: fs, nperseg: nps, noverlap: nov)
     let xx = SignalMath.welchPsd(signalA, fs: fs, nperseg: nps, noverlap: nov).psd
@@ -361,9 +393,17 @@ public func physicsGate(hypothesis: [String: Any], features: [String: Any], cohe
     var kept: [[String: Any]] = []
     for hyp0 in raw {
         let fault = hyp0["fault"] as? String ?? "unknown"
-        let p = num(hyp0, "p")
+        // Model output can carry p outside [0, 1]; clamp before any check uses it.
+        let rawP = num(hyp0, "p")
+        let p = rawP.isFinite ? min(1, max(0, rawP)) : 0
         var hyp = hyp0
+        hyp["p"] = p
         var keep = true
+        if !knownFaultDetails.contains(fault) {
+            actions.append(GateAction(action: "REJECT", fault: fault, reason: "not a schema fault name"))
+            escalate = true
+            keep = false
+        }
         if fault == "static_imbalance" || fault == "couple_imbalance" {
             if amp1 < amp2 && amp2 > 1e-6 {
                 actions.append(GateAction(action: "REJECT", fault: fault, reason: "2x > 1x"))

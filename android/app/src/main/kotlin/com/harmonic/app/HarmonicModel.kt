@@ -67,7 +67,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
     var uid by mutableStateOf<String?>(null)
         private set
     var machineType by mutableStateOf("fan")
-    /** Blank means "I don't know"; the DSP then assumes [DEFAULT_RPM]. */
+    /** Blank means "I don't know"; the DSP then searches the whole speed range. */
     var rpmText by mutableStateOf("")
     var isoClass by mutableStateOf("class_I")
     var seconds by mutableStateOf(DEFAULT_SECONDS)
@@ -79,7 +79,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
     var recordStep by mutableStateOf(1)
         private set
     val isLargeMachine: Boolean get() = isoClass != "class_I"
-    private val effectiveRpm: Double get() = rpmText.toDoubleOrNull()?.takeIf { it >= 60 } ?: DEFAULT_RPM
+    private val effectiveRpm: Double get() = rpmText.toDoubleOrNull()?.takeIf { it >= 60 } ?: 0.0
 
     fun setLargeMachine(large: Boolean) {
         isoClass = if (large) "group2_rigid" else "class_I"
@@ -131,7 +131,8 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         authNote = "Signed in"
         val c = joinCode()
         code = c
-        val id = sessions.host(me, c, seconds)
+        result = null
+        val id = sessions.host(me, c, machineType, effectiveRpm, isoClass, seconds)
         watch(id)
         screen = Screen.Lobby
     }
@@ -141,6 +142,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         val me = uid ?: ensureSignedIn() ?: error("Sign-in required")
         uid = me
         authNote = "Signed in"
+        result = null
         val id = sessions.join(me, raw.trim().uppercase())
         code = raw.trim().uppercase()
         watch(id)
@@ -174,11 +176,10 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
                 analyzing = true
                 busy = true
                 status = "Analyzing"
-                val features = featuresFor(analysis, null, emptyMap(), emptyMap(), 1.0)
+                val features = featuresFor(analysis, emptyList(), emptyMap(), emptyMap(), 1.0)
+                diagnoser.newCheck()
                 val (dx, gate) = diagnoser.diagnose(features, config)
-                result = logToActiveMachine(
-                    ShownResult(dx, gate, features, listOf("android"), shakeMmS = maxOf(analysis.velocityH, analysis.velocityV))
-                )
+                result = logToActiveMachine(ShownResult(dx, gate, features, listOf("android"), shakeMmS = analysis.shake))
                 status = ""
                 screen = Screen.Result
             } catch (e: CancellationException) {
@@ -207,6 +208,18 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         trace = floatArrayOf()
         status = if (isPreview) "" else authNote
         screen = if (isPreview) Screen.Lobby else Screen.Home
+    }
+
+    /**
+     * The app left the screen. Android stops sending sensor samples to background apps,
+     * so a single-phone check in progress would be ruined: stop it and say why. A session
+     * recording is caught by the gap check when it ends.
+     */
+    fun onAppBackgrounded() {
+        if (screen == Screen.Record && !analyzing && captureJob?.isActive == true) {
+            cancelRecording()
+            error = "The check stopped because Harmonic left the screen. Start it again and keep the app open until it ends."
+        }
     }
 
     fun openLobbyPreview() {
@@ -376,7 +389,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
                     if (!isOwner) {
                         // Joiners follow the host's machine settings and duration.
                         machineType = live.machineType
-                        rpmText = if (live.rpm == DEFAULT_RPM) "" else live.rpm.toInt().toString()
+                        rpmText = if (live.rpm <= 0.0) "" else live.rpm.toInt().toString()
                         isoClass = live.isoClass
                         seconds = live.recordSeconds.coerceIn(MIN_SECONDS, MAX_SECONDS)
                     }
@@ -386,6 +399,12 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
                         captureAndUpload(live)
                     }
                     val diagnosis = live.diagnosis
+                    if (live.status == "done" && !isOwner && recKey !in shown) {
+                        error = "That check has already finished. Ask the first phone to start a new one."
+                        session = null
+                        screen = Screen.Home
+                        throw CancellationException("finished session")
+                    }
                     if (live.status == "done" && diagnosis != null && screen != Screen.Result) {
                         result = diagnosisFromMap(diagnosis)
                         busy = false
@@ -454,17 +473,18 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         val ordered = rows.sortedByDescending { it["uid"] == live.ownerUid }
         val analyses = ordered.mapNotNull { rowToAnalysis(it) }
         val primary = analyses.firstOrNull() ?: error("No usable recordings were uploaded")
-        val secondary = analyses.getOrNull(1)
-        var phase = emptyMap<String, Double?>()
-        var coh = emptyMap<String, Double?>()
-        var syncConf = if (secondary == null) 1.0 else 0.5
-        if (secondary != null) {
-            val cross = crossPhones(primary, secondary)
-            phase = cross.phase
-            coh = cross.coherence
-            syncConf = cross.syncConf
+        val others = analyses.drop(1).take(PHONE_LETTERS.length - 1)
+        val phase = linkedMapOf<String, Double?>()
+        val coh = linkedMapOf<String, Double?>()
+        var syncConf = 1.0
+        others.forEachIndexed { i, other ->
+            val cross = crossPhones(primary, other, PHONE_LETTERS[i + 1])
+            phase.putAll(cross.phase)
+            coh.putAll(cross.coherence)
+            syncConf = minOf(syncConf, cross.syncConf)
         }
-        val features = featuresFor(primary, secondary, phase, coh, syncConf, live.machineType, live.rpm, live.isoClass)
+        val features = featuresFor(primary, others, phase, coh, syncConf, live.machineType, live.rpm, live.isoClass)
+        diagnoser.newCheck()
         val (dx, gate) = diagnoser.diagnose(features, config)
         val payload = mapOf(
             "fault" to dx.fault,
@@ -484,7 +504,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         result = logToActiveMachine(
             ShownResult(
                 dx, gate, features, rows.map { it["platform"]?.toString() ?: "?" },
-                shakeMmS = maxOf(primary.velocityH, primary.velocityV),
+                shakeMmS = analyses.maxOf { it.shake },
             )
         )
         busy = false
@@ -503,7 +523,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
             val total = seconds
             val steps = total * 10
             recordStep = if (syncTaps) 0 else 1
-            if (syncTaps) pulseTap(120)
+            // No vibration while recording: the phone would measure its own motor.
             repeat(steps) { i ->
                 delay(100)
                 elapsed = (i + 1) / 10f
@@ -515,25 +535,24 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
                     elapsed > total - TAP_WINDOW_S -> 2
                     else -> 1
                 }
-                if (step != recordStep) {
-                    recordStep = step
-                    // A buzz on each step change, since the screen may not be in view.
-                    pulseTap(120)
-                }
+                if (step != recordStep) recordStep = step
                 val taps = recorder.consumeTaps()
                 if (taps > 0) {
                     tapCount += taps
                     lastTapAt = SystemClock.elapsedRealtime()
-                    pulseTap()
                 }
             }
-            pulseTap(300)
         } catch (e: CancellationException) {
             recorder.stop()
             throw e
         }
         val recording = recorder.stop()
+        pulseTap(300)
         if (recording.raw.size < 32) error("Not enough samples (${recording.raw.size}). Is the accelerometer available?")
+        val gap = recording.longestGapS()
+        if (gap > MAX_GAP_S) {
+            error("The phone stopped measuring for ${"%.1f".format(gap)} s. Keep Harmonic open on screen until the check ends.")
+        }
         return recording.analyze(
             effectiveRpm,
             isoClass,
@@ -555,7 +574,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
 
     private fun featuresFor(
         primary: PhoneAnalysis,
-        secondary: PhoneAnalysis?,
+        others: List<PhoneAnalysis>,
         phase: Map<String, Double?>,
         coherence: Map<String, Double?>,
         syncConf: Double,
@@ -568,16 +587,20 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
             "A_V" to primary.velocityV,
             "A_A" to primary.velocityA,
         )
-        if (secondary != null) {
-            vel["B_H"] = secondary.velocityH
-            vel["B_V"] = secondary.velocityV
-            vel["B_A"] = secondary.velocityA
+        others.forEachIndexed { i, o ->
+            val l = PHONE_LETTERS[i + 1]
+            vel["${l}_H"] = o.velocityH
+            vel["${l}_V"] = o.velocityV
+            vel["${l}_A"] = o.velocityA
         }
-        val fs = listOf(primary.fsHz) + (secondary?.let { listOf(it.fsHz) } ?: emptyList())
+        val all = listOf(primary) + others
+        val fs = all.map { it.fsHz }
+        val worstZone = all.maxOf { it.severityZone }
         return buildFeatureVector(
             FeatureInput(
                 machineType = type,
-                rpmNameplate = rpm,
+                // Unknown nameplate: report the measured speed so the model has a number.
+                rpmNameplate = if (rpm > 0) rpm else primary.rpmRun,
                 blades = null,
                 mounting = if (iso.contains("flexible")) "flexible" else "rigid",
                 isoClass = iso,
@@ -587,7 +610,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
                 bandLimitHz = fs.min() / 2.0,
                 runningSpeedHz = primary.runningSpeedHz,
                 velocityMmS = vel,
-                severityZone = primary.severityZone,
+                severityZone = worstZone,
                 orders = primary.orders,
                 axialToRadialRatio = primary.axialToRadial,
                 phaseDeg = phase,
@@ -603,7 +626,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         rc.setConfigSettingsAsync(remoteConfigSettings { minimumFetchIntervalInSeconds = 60 }).await()
         rc.setDefaultsAsync(
             mapOf(
-                "model_cloud_refine" to "gemini-3.8-flash",
+                "model_cloud_refine" to "gemini-3.5-flash-lite",
                 "model_cloud_fallback" to "gemini-3.5-flash-lite",
                 "prompt_version" to "v1",
                 "record_seconds" to DEFAULT_SECONDS.toLong(),
@@ -622,7 +645,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         }
         val thresholds = runCatching { parseRemoteConfigThresholds(rc.getString("severity_thresholds")) }.getOrNull()
         config = HarmonicConfig(
-            cloudRefineModel = rc.getString("model_cloud_refine").ifBlank { "gemini-3.8-flash" },
+            cloudRefineModel = rc.getString("model_cloud_refine").ifBlank { "gemini-3.5-flash-lite" },
             cloudFallbackModel = rc.getString("model_cloud_fallback").ifBlank { "gemini-3.5-flash-lite" },
             promptVersion = rc.getString("prompt_version").ifBlank { "v1" },
             recordSeconds = rc.getLong("record_seconds").toInt().coerceIn(MIN_SECONDS, MAX_SECONDS),
@@ -687,8 +710,6 @@ private fun ShownResult.toReading() = Reading(
     source = diagnosis.inferenceSource,
 )
 
-/** Typical 4-pole farm motor on 60 Hz mains; used when the RPM is left blank. */
-const val DEFAULT_RPM = 1800.0
 const val DEFAULT_SECONDS = 15
 private const val MIN_SECONDS = 8
 private const val MAX_SECONDS = 20
@@ -697,7 +718,21 @@ const val TAP_WINDOW_S = 3f
 
 private data class Cross(val phase: Map<String, Double?>, val coherence: Map<String, Double?>, val syncConf: Double)
 
-private fun crossPhones(a: PhoneAnalysis, b: PhoneAnalysis): Cross {
+/** Phone letters in feature keys: A is the host, then B, C, D. */
+const val PHONE_LETTERS = "ABCD"
+
+/** Longest pause between samples a recording may have; longer means the app left the screen. */
+private const val MAX_GAP_S = 0.25
+
+/** Overall shake (velocity RMS, mm/s) used for severity: the worst of the three axes. */
+val PhoneAnalysis.shake: Double get() = maxOf(velocityH, velocityV, velocityA)
+
+private fun crossPhones(a: PhoneAnalysis, b0: PhoneAnalysis, letter: Char = 'B'): Cross {
+    // Every phone starts recording on the same session update, so line the recordings up
+    // by their start first. The tap search windows then no longer depend on how far the
+    // phones' wall clocks disagree.
+    val shift = a.uniform.timestamps.first() - b0.uniform.timestamps.first()
+    val b = b0.copy(uniform = b0.uniform.copy(timestamps = DoubleArray(b0.uniform.timestamps.size) { b0.uniform.timestamps[it] + shift }))
     val seriesA = listOf(a.uniform.v, a.uniform.a, a.uniform.h)
     val seriesB = listOf(b.uniform.v, b.uniform.a, b.uniform.h)
     val accelA = stack(seriesA)
@@ -718,13 +753,19 @@ private fun crossPhones(a: PhoneAnalysis, b: PhoneAnalysis): Cross {
     val h = crossPhaseCoherence(commonH.signals[0], commonH.signals[1], commonH.fsOut, f)
     val v = crossPhaseCoherence(commonV.signals[0], commonV.signals[1], commonV.fsOut, f)
     val ax = crossPhaseCoherence(commonA.signals[0], commonA.signals[1], commonA.fsOut, f)
-    val hv = crossPhaseCoherence(commonH.signals[0], commonV.signals[0], commonH.fsOut, f)
-    val phase = linkedMapOf(
-        "AB_H_1x" to h.phaseDeg, "AB_V_1x" to v.phaseDeg, "AB_A_1x" to ax.phaseDeg, "A_HV_1x" to hv.phaseDeg,
+    val pair = "A$letter"
+    val phase = linkedMapOf<String, Double?>(
+        "${pair}_H_1x" to h.phaseDeg, "${pair}_V_1x" to v.phaseDeg, "${pair}_A_1x" to ax.phaseDeg,
     )
-    val coh = linkedMapOf(
-        "AB_H_1x" to h.coherence, "AB_V_1x" to v.coherence, "AB_A_1x" to ax.coherence, "A_HV_1x" to hv.coherence,
+    val coh = linkedMapOf<String, Double?>(
+        "${pair}_H_1x" to h.coherence, "${pair}_V_1x" to v.coherence, "${pair}_A_1x" to ax.coherence,
     )
+    if (letter == 'B') {
+        // Phone A's own horizontal-vs-vertical phase, once per session.
+        val hv = crossPhaseCoherence(commonH.signals[0], commonV.signals[0], commonH.fsOut, f)
+        phase["A_HV_1x"] = hv.phaseDeg
+        coh["A_HV_1x"] = hv.coherence
+    }
     val snr = minOf(offset.snrTap1, offset.snrTap2)
     val syncConf = ((snr - 1.0) / 9.0).coerceIn(0.0, 1.0)
     return Cross(phase, coh, syncConf)
@@ -798,6 +839,12 @@ private fun friendlyFirebaseError(t: Throwable): String {
         msg.contains("App Check token is invalid", ignoreCase = true) ||
             msg.contains("App attestation failed", ignoreCase = true) ->
             "App Check rejected this debug build. Register the emulator debug token in Firebase App Check and try again."
+        msg.contains("PERMISSION_DENIED") || msg.contains("Missing or insufficient permissions", ignoreCase = true) ->
+            "That session has finished or can't be joined. Ask the first phone for a new code."
+        msg.contains("UNAVAILABLE") || msg.contains("Unable to resolve host", ignoreCase = true) ||
+            msg.contains("offline", ignoreCase = true) || t is java.net.UnknownHostException ->
+            "No internet connection. A check on this phone still works; sessions need a connection."
+        msg.contains("No session for that code") -> "No session has that code. Check the letters and try again."
         else -> msg
     }
 }

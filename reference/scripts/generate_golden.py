@@ -21,6 +21,22 @@ from scipy.signal import butter
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "reference"))
 
+# Golden values move in the last digits between SciPy releases, and the Kotlin and Swift
+# tests compare against them. Only regenerate with the pinned versions (or --force).
+_PINNED = {}
+for _line in (ROOT / "reference" / "requirements-golden.txt").read_text().splitlines():
+    if "==" in _line and not _line.lstrip().startswith("#"):
+        _name, _ver = _line.strip().split("==")
+        _PINNED[_name] = _ver
+_HAVE = {"numpy": np.__version__, "scipy": __import__("scipy").__version__}
+_DIFF = {k: (v, _HAVE.get(k)) for k, v in _PINNED.items() if _HAVE.get(k) != v}
+if _DIFF and "--force" not in sys.argv:
+    sys.exit(
+        "Refusing to regenerate goldens with unpinned versions "
+        + ", ".join(f"{k} {have} (pinned {want})" for k, (want, have) in _DIFF.items())
+        + ". Install reference/requirements-golden.txt or pass --force."
+    )
+
 from harmonic_dsp.features import build_feature_vector
 from harmonic_dsp.frames import estimate_gravity, project_axes, remove_dc
 from harmonic_dsp.gate import physics_gate

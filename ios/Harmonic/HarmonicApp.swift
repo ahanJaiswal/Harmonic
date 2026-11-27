@@ -17,6 +17,9 @@ struct HarmonicApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
+                // The palette is dark-only (Ink background), so pin the scheme; otherwise
+                // system controls and default text follow light mode and lose contrast.
+                .preferredColorScheme(.dark)
         }
     }
 }
