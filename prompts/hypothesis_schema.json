@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harmonic.dev/prompts/hypothesis_schema.json",
+  "title": "HarmonicDiagnosis",
+  "description": "Structured diagnosis shared by Android (Gemini Nano / cloud) and iOS (Apple Foundation Models / cloud). Prompt version v1. severity_zone from the model is overwritten by the DSP physics gate.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "fault", "fault_detail", "severity_zone", "confidence", "recommended_action", "hypotheses", "evidence", "next_test"],
+  "properties": {
+    "summary": { "type": "string", "minLength": 1 },
+    "fault": {
+      "type": "string",
+      "enum": ["imbalance", "misalignment", "looseness", "bearing_wear", "healthy", "unknown"]
+    },
+    "fault_detail": {
+      "type": "string",
+      "enum": [
+        "static_imbalance", "couple_imbalance", "angular_misalignment", "parallel_misalignment",
+        "structural_looseness", "rotating_looseness", "bent_shaft", "resonance", "healthy", "unknown"
+      ]
+    },
+    "severity_zone": { "type": "string", "enum": ["A", "B", "C", "D"] },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "recommended_action": { "type": "string" },
+    "hypotheses": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["fault", "p"],
+        "additionalProperties": false,
+        "properties": {
+          "fault": { "type": "string" },
+          "p": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    },
+    "evidence": { "type": "array", "items": { "type": "string" } },
+    "next_test": {
+      "type": "string",
+      "enum": ["none", "radial_phase_DE_NDE", "axial_reading", "vary_speed", "repeat_for_phase_stability"]
+    }
+  }
+}

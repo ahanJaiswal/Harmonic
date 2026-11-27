@@ -1,7 +1,7 @@
 {
   "parameters": {
     "model_cloud_refine": {
-      "defaultValue": { "value": "gemini-3.8-flash" },
+      "defaultValue": { "value": "gemini-3.5-flash-lite" },
       "description": "Cloud model for refinement step"
     },
     "model_cloud_fallback": {
@@ -35,7 +35,7 @@
       "description": "Cap on on-device inference calls per session (Android quota safety)"
     },
     "record_seconds": {
-      "defaultValue": { "value": "40" },
+      "defaultValue": { "value": "15" },
       "description": "Default recording duration in seconds"
     },
     "phase_stability_threshold_deg": {

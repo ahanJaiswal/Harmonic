@@ -27,6 +27,7 @@ Our measurements are band-limited (phone fs/2 < 1000 Hz) — always label as
 
 from __future__ import annotations
 
+import math
 from typing import Literal
 
 # Zone boundary type alias: (A_max, B_max, C_max) — values > C_max → zone D
@@ -60,6 +61,9 @@ def classify_zone(
     -------
     zone : "A" | "B" | "C" | "D"
     """
+    v_check = float(velocity_rms_mm_s)
+    if not math.isfinite(v_check) or v_check < 0:
+        raise ValueError(f"velocity_rms_mm_s must be finite and non-negative, got {velocity_rms_mm_s!r}")
     t = (thresholds or ZONE_THRESHOLDS).get(machine_class, ZONE_THRESHOLDS["class_I"])
     a_max, b_max, c_max = t
 

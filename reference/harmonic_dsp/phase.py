@@ -30,6 +30,18 @@ import numpy as np
 from scipy.signal import csd as scipy_csd, welch as scipy_welch
 
 
+def coherence_nperseg(length: int) -> int:
+    """
+    Default Welch segment for coherence: the largest power of two that still leaves
+    about seven half-overlapped segments. With a single segment, magnitude-squared
+    coherence is 1.0 by construction, so phase taken from pure noise would look trusted.
+    """
+    n = 32
+    while n * 2 <= length // 4:
+        n *= 2
+    return max(1, min(n, length))
+
+
 def cross_phase_coherence(
     signal_a: np.ndarray,
     signal_b: np.ndarray,
@@ -72,8 +84,7 @@ def cross_phase_coherence(
         )
 
     if nperseg is None:
-        nperseg = int(2 ** np.ceil(np.log2(fs / 0.1)))
-        nperseg = min(nperseg, len(signal_a))
+        nperseg = coherence_nperseg(len(signal_a))
     if noverlap is None:
         noverlap = nperseg // 2
 

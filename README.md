@@ -21,7 +21,7 @@ synchronizes their clocks by tapping them together, and diagnoses mechanical fau
 | 2. On-device hypothesis | Gemini Nano 4 (Android/Chrome) or Apple FM (iOS) → structured JSON fault hypothesis, offline | On device |
 | 3. Physics gate | Deterministic checks reject any hypothesis that contradicts the measured signal | On device |
 | 4. Active diagnosis | If top-2 within Δp < 0.2 → ask for the one measurement that best separates them | On device |
-| 5. Cloud refinement | `gemini-3.8-flash` verifies on-device hypothesis against machine PDF manual + history → final diagnosis + work order | Cloud (Firebase AI Logic) |
+| 5. Cloud refinement | A fast cloud model (`model_cloud_refine`, default `gemini-3.5-flash-lite`) re-checks ambiguous or zone C/D cases; every AI call is capped at 15 s, after which the first answer stands | Cloud (Firebase AI Logic) |
 
 Multi-platform: **Android** (Gemini Nano 4 · image+JSON) · **iOS** (Apple FM · text+tools+multi-turn) · **Web/Chrome** (Gemini Nano · fleet dashboard).
 
@@ -40,14 +40,15 @@ No single-channel analyzer can make these distinctions reliably.
 
 | Platform | Inference mode | Model | Input |
 |----------|---------------|-------|-------|
-| Android  | `PREFER_ON_DEVICE` | Gemini Nano 4 (AICore) | Spectrum PNG + features JSON |
-| Web/Chrome | `PREFER_ON_DEVICE` | Gemini Nano (Prompt API) | Spectrum PNG + features JSON |
-| iOS      | `HybridModel(primary: SystemLanguageModel)` | Apple Foundation Models | Features JSON (text) + tool calling |
-| Cloud refinement (all platforms) | `ONLY_IN_CLOUD` | `gemini-3.8-flash` | Full features + PDF manual + history |
+| Android  | `OnDeviceConfig(mode: PREFER_ON_DEVICE)` via `firebase-ai` 18.2.0 + `firebase-ai-ondevice` 16.0.0-beta08 | Gemini Nano, cloud fallback `gemini-3.5-flash-lite` | Feature JSON text |
+| iOS      | `LanguageModelSession` on `SystemLanguageModel`, then `geminiLanguageModel` | Apple Foundation Models, cloud fallback through Firebase AI Logic | Feature JSON text |
+| Cloud refinement (both apps) | Android `ONLY_IN_CLOUD`; iOS `geminiLanguageModel` | `gemini-3.5-flash-lite` (Remote Config `model_cloud_refine`) | Features plus the on-device hypothesis; 15 s cap |
+
+Firebase Apple SDK 13 removed `HybridModel`. The iOS app implements the same prefer-on-device-then-cloud behavior with the current Foundation Models adapter (`FirebaseAILogic`). The result screen names the path that answered: on device, cloud, cloud refinement, or physics fallback.
 
 All AI inference goes through **Firebase AI Logic SDKs**. No other model API is called anywhere.
 Model names, thresholds, and prompt versions are served by **Remote Config** so we can tune
-without a release. **App Check** is enabled on all endpoints (debug tokens documented below).
+without a release. **App Check** debug tokens are registered from the log line the debug build prints. Steps are in [docs/FIREBASE_SETUP.md](docs/FIREBASE_SETUP.md).
 
 ---
 
@@ -55,38 +56,24 @@ without a release. **App Check** is enabled on all endpoints (debug tokens docum
 
 ```
 harmonic/
-├─ LICENSE                     Apache-2.0
-├─ README.md                   ← you are here
-├─ .env.example                environment / App Check debug token template
-├─ docs/
-│  └─ HARMONIC_PROJECT.md      full project bible (spec, timeline, decisions)
-├─ prompts/                    versioned prompts + JSON schemas
-│  ├─ v1_first_pass.md
+├─ LICENSE                         Apache-2.0
+├─ README.md
+├─ docs/FIREBASE_SETUP.md          beginner console steps (no project is committed)
+├─ prompts/
+│  ├─ v1_first_pass.md             system prompt, version key "v1"
 │  └─ hypothesis_schema.json
-├─ reference/
-│  ├─ harmonic_dsp/            Python DSP package (source of truth for all ports)
-│  │  ├─ sync.py               tap-sync, drift correction
-│  │  ├─ frames.py             gravity-based coordinate frame
-│  │  ├─ resample.py           non-uniform → uniform time grid
-│  │  ├─ spectrum.py           Welch PSD, amplitude spectrum
-│  │  ├─ orders.py             order extraction & interpolation
-│  │  ├─ velocity.py           acceleration → velocity, RMS, severity
-│  │  ├─ severity.py           ISO 10816/20816 zone classification
-│  │  ├─ phase.py              cross-phone phase & coherence
-│  │  ├─ features.py           feature JSON assembler
-│  │  └─ gate.py               physics gate (hallucination filter)
-│  └─ tests/                   pytest suite + golden vector validation
-├─ reference/golden/           synthetic inputs + expected feature JSON outputs
-├─ eval/                       datasets, benchmark runners, results
-├─ firebase/
-│  ├─ firestore.rules
-│  ├─ storage.rules
-│  ├─ firebase.json
-│  └─ remoteconfig.template.json
-├─ web/                        Vite + React + TypeScript dashboard
-├─ android/                    Kotlin + Jetpack Compose
-└─ ios/                        SwiftUI + SPM
+├─ reference/harmonic_dsp/         Python DSP, source of truth
+├─ reference/tests/                pytest (135 tests)
+├─ reference/scripts/generate_golden.py
+├─ reference/golden/vectors.json   inputs and expected outputs
+├─ firebase/                       rules, indexes, Remote Config, hosting placeholder
+├─ android/                        Kotlin DSP module + Jetpack Compose app
+└─ ios/
+   ├─ Packages/HarmonicDSP/        Swift package + XCTest against the golden file
+   └─ Harmonic.xcodeproj           SwiftUI app, bundle id com.harmonic.app
 ```
+
+The web dashboard from the original outline is not in this slice. Hosting in `firebase/` is a one-page placeholder so `firebase deploy` has a `public` directory.
 
 ---
 
@@ -110,48 +97,81 @@ Prompt version: v1. See `eval/results/` for full ablation tables.
 
 ---
 
-## Setup for judges
+## What is implemented
 
-### Prerequisites
-- Firebase project with App Check enabled (debug token: set `VITE_APP_CHECK_DEBUG_TOKEN` from `.env.example`)
-- Chrome 139+ with `chrome://flags/#prompt-api-for-gemini-nano-multimodal-input` enabled, ≥ 22 GB free disk, ≥ 4 GB VRAM or 16 GB RAM
-- Android: Gemini Nano 4 device (Pixel 10/11, Galaxy S25/S26, OnePlus 13/15)
-- iOS: iPhone with Apple Intelligence enabled (iPhone 15 Pro or newer)
+### Android (builds and runs)
 
-### Web / judge mode
-```bash
-cd web
-npm install
-cp ../.env.example .env.local   # fill in Firebase config + App Check debug token
-npm run dev
+- **Simple farmer-facing UI.** One big "check this machine" flow, plain-language results, and an optional "Use more phones" path that hosts a session.
+- **Multi-phone sessions.** Host a session or join with a 6-character code (QR on Android and iOS). The session document is platform-neutral, so a Pixel and an iPhone can sit in the same session.
+- **Machine history.** Each machine keeps its past readings on the phone, and the result screen says how it compares to last time.
+- **"Why do we think so?"** A result view that explains, in plain words, which measurements led to the diagnosis.
+- **Hybrid AI with three paths.** On-device Gemini Nano first, cloud Gemini through Firebase AI Logic when needed (plus a cloud refinement for zones C/D and close calls), and an offline physics fallback when neither model answers. The result screen names the path that answered.
+
+The pipeline underneath: record the accelerometer (`SENSOR_DELAY_FASTEST`), build the feature JSON on device (gravity frame, resample, Welch, orders, velocity RMS, ISO zone, cross-phone phase when a second recording is present), ask the model, then let the physics gate overwrite the zone and reject claims that contradict the spectrum.
+
+**Record this phone only** runs the DSP with no Firebase project. The diagnosis is then the physics fallback.
+
+### iOS (code exists, not yet compiling)
+
+The SwiftUI app and the `HarmonicDSP` Swift package are in `ios/`. It targets Xcode 27 / iOS 27 (Foundation Models + Firebase AI Logic) and is being fixed to compile; it has not been built on a Mac in this checkout. It uses the same Firestore session layout as Android.
+
+### Tests
+
+- Python reference DSP: 135 pytest tests in `reference/tests/`.
+- Kotlin: `:dsp` unit tests (including the golden-vector check against the Python output) and app unit tests (machine-history comparison and the "Why" view).
+
+## Setup
+
+Console steps, debug-token registration, and the deploy command are in [docs/FIREBASE_SETUP.md](docs/FIREBASE_SETUP.md). Package name and bundle id are both `com.harmonic.app`.
+
+### Android (verified on this machine)
+
+Needs JDK 17+ (Android Studio’s JBR 21 works) and Android SDK 36.
+
+```powershell
+cd android
+.\gradlew.bat :dsp:test :app:testDebugUnitTest assembleDebug
 ```
-Open `http://localhost:5173`. Use **Judge Mode** (top-right) to explore pre-recorded sessions
-without needing physical phones. If your Chrome has no Nano model, calls fall back to cloud —
-that's the hybrid design working as intended.
+
+`google-services.json` is optional for that command. Put it at `android/app/google-services.json` before you want Auth, Firestore, or Gemini. Install `android/app/build/outputs/apk/debug/app-debug.apk` on a phone.
+
+### iOS (not compiled yet)
+
+On a Mac with Xcode 27:
+
+```bash
+cd ios/Packages/HarmonicDSP
+swift test
+```
+
+Then open `ios/Harmonic.xcodeproj`, let Swift Package Manager resolve Firebase 13.2+, set your team, drop in `GoogleService-Info.plist`, and run on an iPhone with Apple Intelligence. Cloud Gemini through Foundation Models needs iOS 27. The on-device system model is used when it is available; otherwise the app falls back to the cloud model, then to the physics screen.
 
 ### Python DSP reference
 ```bash
 pip install -e "reference/[dev]"
 pytest reference/tests/ -v
+python reference/scripts/generate_golden.py
 ```
+
+`generate_golden.py` rewrites `reference/golden/vectors.json` and the copies the Kotlin and Swift tests load. Do not hand-edit those copies.
 
 ### Pre-existing code / disclosures
 - Firebase starter templates and codelabs used as reference for SDK integration patterns
-- Python NumPy/SciPy/Matplotlib for reference DSP
-- Vite + React scaffold for web app
+- Python NumPy/SciPy for the reference DSP. The Kotlin and Swift ports are checked against golden vectors generated from that package
+- Vite + React scaffold was planned for a web app and is not part of this mobile slice
 - All application logic, DSP algorithms, prompts, and architecture are original work created
   during the submission period (Nov 11 – Nov 30, 2026)
 - AI coding assistants (Claude, Cursor) used for code generation under team supervision
 
 ---
 
-## Scope and honest limitations
+## Limitations
 
-- Phones sample at ~100 Hz (iPhone) to ~200 Hz (Android) → reliable for **low-frequency faults**
-  up to a few thousand RPM. High-frequency bearing defect frequencies are **out of scope**.
-- Velocity RMS is computed over a **band-limited** range (up to fs/2), labeled accordingly.
-- Harmonic is **screening / triage**, not a replacement for a certified analyst (ISO 18436)
-  on safety-critical assets.
+- **No bearing tones.** Phones sample at ~100 Hz (iPhone) to ~200 Hz (Android), so Harmonic sees low-frequency faults (imbalance, misalignment, looseness) up to a few thousand RPM. High-frequency bearing defect tones are out of reach of a phone accelerometer.
+- **Placement matters.** Each phone must lie flat on the machine with its top edge along the shaft. The axis labels (horizontal / vertical / axial) assume that orientation.
+- **Band-limited velocity.** Velocity RMS is computed up to fs/2 and labeled that way.
+- **Anonymous sessions.** Phones sign in with Firebase Anonymous Auth. Anyone with a 6-character code can join a session while it is in the lobby; there are no named accounts.
+- **Screening, not certification.** Harmonic is triage, not a replacement for a certified analyst (ISO 18436) on safety-critical assets.
 
 ---
 

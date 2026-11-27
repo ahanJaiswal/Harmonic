@@ -25,6 +25,7 @@ count of REJECT + OVERWRITE_ZONE actions across all sessions.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from typing import Any, Literal
 
 
@@ -71,6 +72,13 @@ def _get_axial(velocity_mm_s: dict[str, float | None], phone: str = "A") -> floa
     return float(velocity_mm_s.get(f"{phone}_A") or 0.0)
 
 
+# fault_detail values allowed by prompts/hypothesis_schema.json.
+KNOWN_FAULT_DETAILS = {
+    "static_imbalance", "couple_imbalance", "angular_misalignment", "parallel_misalignment",
+    "structural_looseness", "rotating_looseness", "bent_shaft", "resonance", "healthy", "unknown",
+}
+
+
 def physics_gate(
     hypothesis: dict[str, Any],
     features: dict[str, Any],
@@ -102,8 +110,24 @@ def physics_gate(
     GateResult — with actions log, accepted flag, corrected hypothesis, escalate flag
     """
     result = GateResult(accepted=True)
+    # Malformed model output must not crash the gate: skip non-objects, clamp p to [0, 1].
+    clean_hyps = []
+    for h in hypothesis.get("hypotheses") or []:
+        if not isinstance(h, dict):
+            continue
+        h = dict(h)
+        try:
+            p_val = float(h.get("p", 0.0))
+        except (TypeError, ValueError):
+            p_val = 0.0
+        if not math.isfinite(p_val):
+            p_val = 0.0
+        h["p"] = min(1.0, max(0.0, p_val))
+        if not isinstance(h.get("fault"), str):
+            h["fault"] = "unknown"
+        clean_hyps.append(h)
     corrected = {
-        "hypotheses":    list(hypothesis.get("hypotheses", [])),
+        "hypotheses":    clean_hyps,
         "severity_zone": hypothesis.get("severity_zone", "A"),
         "evidence":      list(hypothesis.get("evidence", [])),
         "next_test":     hypothesis.get("next_test", "none"),
@@ -137,6 +161,11 @@ def physics_gate(
     for hyp in corrected["hypotheses"]:
         fault = hyp.get("fault", "unknown")
         p     = float(hyp.get("p", 0.0))
+
+        if fault not in KNOWN_FAULT_DETAILS:
+            result.log_action("REJECT", fault, f"'{fault}' is not one of the fault names the schema allows.")
+            result.escalate_to_cloud = True
+            continue
 
         keep = True
 

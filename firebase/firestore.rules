@@ -1,57 +1,135 @@
 rules_version = '2';
 
+// Least-privilege rules for Harmonic. Client write paths these must keep working:
+//   host:   set sessions/{id} (status 'lobby'), then set joinCodes/{CODE}
+//   join:   get joinCodes/{CODE}; transaction get sessions/{id} + update {members, memberUids}
+//   host:   update sessions/{id} {machine, recordSeconds, status, record, diagnosis}
+//   every:  set sessions/{id}/recordings/{uid} (own doc); host lists recordings
+// Writers: android/.../SessionRepository.kt and ios/Harmonic/SessionModel.swift.
+
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function sessionData(sessionId) {
+      return get(/databases/$(database)/documents/sessions/$(sessionId)).data;
+    }
+
+    function inSession(data) {
+      return request.auth.uid == data.ownerUid
+        || request.auth.uid in data.get('memberUids', []);
+    }
+
     // ── Users ──────────────────────────────────────────────────────────────
     match /users/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read, write: if signedIn() && request.auth.uid == uid;
     }
 
     // ── Machines ───────────────────────────────────────────────────────────
     match /machines/{machineId} {
-      allow read, write: if request.auth != null
-        && request.auth.uid == resource.data.ownerUid;
-      allow create: if request.auth != null
-        && request.auth.uid == request.resource.data.ownerUid;
+      allow read, delete: if signedIn() && request.auth.uid == resource.data.ownerUid;
+      allow create: if signedIn() && request.auth.uid == request.resource.data.ownerUid;
+      allow update: if signedIn()
+        && request.auth.uid == resource.data.ownerUid
+        && request.resource.data.ownerUid == resource.data.ownerUid;
+    }
+
+    // ── Join codes ─────────────────────────────────────────────────────────
+    // Any signed-in phone can look up a code (needed to join). Only the host of
+    // the referenced session can create it; nobody else can repoint or steal it.
+    match /joinCodes/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['sessionId', 'ownerUid'])
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.sessionId is string
+        && sessionData(request.resource.data.sessionId).ownerUid == request.auth.uid
+        && sessionData(request.resource.data.sessionId).joinCode == code;
+
+      allow update: if signedIn()
+        && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['sessionId', 'ownerUid'])
+        && request.resource.data.ownerUid == request.auth.uid
+        && sessionData(request.resource.data.sessionId).ownerUid == request.auth.uid;
+
+      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
     }
 
     // ── Sessions ───────────────────────────────────────────────────────────
-    // Owner has full access; joiners (by joinCode) get read + limited write.
     match /sessions/{sessionId} {
-      allow read: if request.auth != null
-        && (request.auth.uid == resource.data.ownerUid
-            || request.auth.uid in resource.data.get('memberUids', []));
+      // A joiner reads the session inside its join transaction before it is a
+      // member, so a single-document get is allowed while the session is in
+      // the lobby. Listing sessions is limited to owner/members.
+      allow get: if signedIn()
+        && (inSession(resource.data) || resource.data.status == 'lobby');
+      allow list: if signedIn() && inSession(resource.data);
 
-      allow create: if request.auth != null
-        && request.auth.uid == request.resource.data.ownerUid;
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.memberUids == [request.auth.uid]
+        && request.resource.data.members is map
+        && request.resource.data.members.keys().hasOnly([request.auth.uid])
+        && request.resource.data.joinCode is string
+        && request.resource.data.status == 'lobby';
 
-      allow update: if request.auth != null
-        && (request.auth.uid == resource.data.ownerUid
-            || request.auth.uid in resource.data.get('memberUids', []));
+      // Owner: anything except ownerUid and joinCode.
+      allow update: if signedIn()
+        && resource.data.ownerUid == request.auth.uid
+        && !request.resource.data.diff(resource.data).affectedKeys()
+              .hasAny(['ownerUid', 'joinCode'])
+        && request.resource.data.status in ['lobby', 'recording', 'done'];
 
-      // Recordings sub-collection
+      // Joiner (or re-joining member): only in the lobby, only members /
+      // memberUids, and the only change is adding/refreshing their own entry.
+      allow update: if signedIn()
+        && resource.data.ownerUid != request.auth.uid
+        && resource.data.status == 'lobby'
+        && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['members', 'memberUids'])
+        && request.resource.data.memberUids is list
+        && request.resource.data.memberUids.hasAll(resource.data.get('memberUids', []))
+        && request.resource.data.memberUids.removeAll(resource.data.get('memberUids', []))
+              .hasOnly([request.auth.uid])
+        && request.auth.uid in request.resource.data.memberUids
+        && request.resource.data.members is map
+        && request.resource.data.members.diff(resource.data.get('members', {}))
+              .affectedKeys().hasOnly([request.auth.uid])
+        && request.resource.data.members[request.auth.uid] is map
+        && request.resource.data.members[request.auth.uid].keys().hasOnly(['platform', 'name']);
+
+      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+
+      // ── Per-phone recordings ─────────────────────────────────────────────
+      // Each phone writes only its own doc (id == its uid). Firestore caps a
+      // document at 1 MiB, which bounds channelsB64.
       match /recordings/{deviceId} {
-        allow read, write: if request.auth != null
-          && (request.auth.uid == get(/databases/$(database)/documents/sessions/$(sessionId)).data.ownerUid
-              || request.auth.uid in get(/databases/$(database)/documents/sessions/$(sessionId)).data.get('memberUids', []));
+        allow read: if signedIn() && inSession(sessionData(sessionId));
+        allow create, update: if signedIn()
+          && request.auth.uid == deviceId
+          && request.resource.data.uid == deviceId
+          && inSession(sessionData(sessionId));
+        allow delete: if false;
       }
     }
 
     // ── Inference logs ─────────────────────────────────────────────────────
-    // Any authenticated user can write their own logs; read own logs only.
+    // Write-once, own logs only.
     match /inference_logs/{logId} {
-      allow create: if request.auth != null
-        && request.auth.uid == request.resource.data.uid;
-      allow read: if request.auth != null
-        && request.auth.uid == resource.data.uid;
+      allow create: if signedIn() && request.auth.uid == request.resource.data.uid;
+      allow read: if signedIn() && request.auth.uid == resource.data.uid;
+      allow update, delete: if false;
     }
 
     // ── Benchmarks ─────────────────────────────────────────────────────────
-    // Public read (judges); only service account writes (via Admin SDK, not client).
+    // Public read (judges); only the Admin SDK writes.
     match /benchmarks/{runId} {
       allow read: if true;
-      allow write: if false; // Admin SDK only
+      allow write: if false;
     }
   }
 }
