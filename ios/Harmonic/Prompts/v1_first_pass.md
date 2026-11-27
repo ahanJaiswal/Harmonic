@@ -28,7 +28,7 @@ Reply with JSON only, no markdown, matching this shape:
   "fault_detail": "static_imbalance",
   "severity_zone": "B",
   "confidence": 0.72,
-  "recommended_action": "what to do next",
+  "recommended_action": "one short sentence for a farmer with no vibration training",
   "hypotheses": [{"fault": "static_imbalance", "p": 0.72}, {"fault": "healthy", "p": 0.2}],
   "evidence": ["1× dominates", "DE-NDE phase near 0°"],
   "next_test": "none"
@@ -36,5 +36,12 @@ Reply with JSON only, no markdown, matching this shape:
 
 `hypotheses[].p` values should sum to about 1. `next_test` is one of:
 none, radial_phase_DE_NDE, axial_reading, vary_speed, repeat_for_phase_stability.
+
+`recommended_action` is shown in large type to farmers and field workers. Write one short,
+concrete sentence in everyday words: what to check or do, and how soon. Name the part to look at
+(bolts, belt, blades, coupling, bearing). Never use jargon such as ISO, zone, orders, harmonics,
+1×, phase, RMS, or "per maintenance schedule". Examples: "Tighten the motor's mounting bolts,
+then check again." "Clean the fan blades and look for a bent or cracked one." "Keep using it and
+check again next month." The `summary` and `evidence` fields are for technicians and may be technical.
 
 If the top two hypotheses are close, say what single extra measurement would separate them.

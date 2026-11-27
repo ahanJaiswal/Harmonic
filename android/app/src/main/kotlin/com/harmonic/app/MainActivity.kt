@@ -8,18 +8,19 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -31,8 +32,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -46,55 +45,117 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.Image
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.sin
 
 private val Ink = Color(0xFF0E1412)
 private val Panel = Color(0xFF17211E)
 private val Line = Color(0xFF2C4038)
 private val Phosphor = Color(0xFFD6FF4A)
-private val Mist = Color(0xFF9BB0A6)
+private val Mist = Color(0xFFA9BDB3)
 private val Paper = Color(0xFFE7F2EB)
 private val DisabledFill = Color(0xFF2A3F37)
 private val DisabledText = Color(0xFFD5E6DB)
-private val Danger = Color(0xFFFF5A36)
+private val Danger = Color(0xFFFF6A4A)
 private val Cloud = Color(0xFF7DD3FC)
 private val CloudFill = Color(0xFF163445)
-private val PhysicsFill = Color(0xFF2C2A1A)
-private val PhysicsText = Color(0xFFE8D48A)
+private val OfflineFill = Color(0xFF2C2A1A)
+private val OfflineText = Color(0xFFE8D48A)
 
-private val ZoneColor = mapOf(
-    "A" to Color(0xFF3DDC97),
-    "B" to Phosphor,
-    "C" to Color(0xFFFFB020),
-    "D" to Danger,
+/** Traffic-light verdicts. The ISO zone letter only appears under Details. */
+private data class Verdict(val title: String, val color: Color)
+
+private val Verdicts = mapOf(
+    "A" to Verdict("Running well", Color(0xFF3DDC97)),
+    "B" to Verdict("OK for now", Phosphor),
+    "C" to Verdict("Fix soon", Color(0xFFFFB020)),
+    "D" to Verdict("Stop and fix", Danger),
 )
 
-private val IsoOptions = listOf(
-    "class_I" to "Class I – small machines",
-    "group2_rigid" to "Group 2 – rigid mount",
-    "group2_flexible" to "Group 2 – flexible mount",
+private val IsoLabel = mapOf(
+    "A" to "good",
+    "B" to "acceptable",
+    "C" to "unsatisfactory",
+    "D" to "unacceptable",
 )
 
-private val MachineOptions = listOf(
-    "fan" to "Fan",
-    "pump" to "Pump",
-    "motor" to "Motor",
+/** Everyday names and one-line meanings for each fault the model can return. */
+private val FaultName = mapOf(
+    "healthy" to "No problem found",
+    "imbalance" to "Out of balance",
+    "misalignment" to "Shafts not lined up",
+    "looseness" to "Something is loose",
+    "bearing_wear" to "Worn bearing",
+    "unknown" to "Unusual shaking",
+)
+
+private val FaultMeaning = mapOf(
+    "healthy" to "The shaking is normal for this kind of machine.",
+    "imbalance" to "One side of the spinning part is heavier than the other. Dirt build-up, a damaged blade or a lost weight can cause it.",
+    "misalignment" to "The motor shaft and the machine it drives are not in a straight line.",
+    "looseness" to "Mounting bolts, the base or a worn fit are letting parts move.",
+    "bearing_wear" to "A bearing is starting to wear out.",
+    "unknown" to "The shaking does not match a common problem.",
+)
+
+private val ZoneAction = mapOf(
+    "A" to "Keep using it. Check again in a few months.",
+    "B" to "Keep using it, and check again next month.",
+    "C" to "Repair it soon, before it gets worse.",
+    "D" to "Stop the machine and repair it before using it again.",
+)
+
+private val FaultTip = mapOf(
+    "imbalance" to "Clean the spinning part and look for a damaged blade or a lost weight.",
+    "misalignment" to "Check that the motor and the machine it drives sit in a straight line, and that the coupling isn't worn.",
+    "looseness" to "Tighten the mounting bolts and check the base for cracks.",
+    "bearing_wear" to "Listen for grinding and feel the bearings for heat.",
+    "unknown" to "Check again with the phone in a different spot.",
+)
+
+/**
+ * The offline physics check writes actions for technicians, so on that path (or when the
+ * model leaves it blank) the app builds a plain one from the zone and the fault.
+ */
+private fun plainAction(dx: com.harmonic.dsp.Diagnosis, fault: String): String {
+    val fromModel = dx.recommendedAction.trim()
+    if (dx.inferenceSource != "physics_fallback" && fromModel.isNotBlank()) return fromModel
+    val zone = ZoneAction[dx.severityZone] ?: ZoneAction.getValue("B")
+    val tip = FaultTip[fault]
+    return if (tip == null || dx.severityZone == "A") zone else "$tip $zone"
+}
+
+private enum class MachineIcon { Pump, Fan, Motor }
+
+private data class MachineOption(val id: String, val label: String, val icon: MachineIcon)
+
+private val Machines = listOf(
+    MachineOption("pump", "Pump", MachineIcon.Pump),
+    MachineOption("fan", "Fan", MachineIcon.Fan),
+    MachineOption("motor", "Motor", MachineIcon.Motor),
 )
 
 private val FieldColors
@@ -141,18 +202,11 @@ private fun HarmonicScreen(model: HarmonicModel) {
             .padding(horizontal = 20.dp, vertical = 16.dp),
     ) {
         BrandHeader()
-        Spacer(Modifier.height(12.dp))
-        val statusVisible = model.status.isNotBlank() &&
-            (model.screen == Screen.Home || model.screen == Screen.Lobby) &&
-            (model.error.isNullOrBlank() || model.error != model.status)
-        if (statusVisible) {
-            Text(model.status, color = Mist, fontSize = 13.sp, lineHeight = 18.sp)
-            Spacer(Modifier.height(8.dp))
-        }
+        Spacer(Modifier.height(20.dp))
         if (model.screen == Screen.Home || model.screen == Screen.Join || model.screen == Screen.Lobby) {
             model.error?.let {
-                Text(it, color = Danger, fontSize = 13.sp, lineHeight = 18.sp)
-                Spacer(Modifier.height(8.dp))
+                Notice(it, Danger)
+                Spacer(Modifier.height(16.dp))
             }
         }
         when (model.screen) {
@@ -171,8 +225,8 @@ private fun BrandHeader() {
         Mark()
         Spacer(Modifier.width(10.dp))
         Column {
-            Text("HARMONIC", color = Phosphor, fontWeight = FontWeight.Black, letterSpacing = 3.sp, fontSize = 20.sp)
-            Text("Multi-phone vibration analyzer", color = Mist, fontSize = 13.sp)
+            Text("HARMONIC", color = Phosphor, fontWeight = FontWeight.Black, letterSpacing = 3.sp, fontSize = 18.sp)
+            Text("Machine health check", color = Mist, fontSize = 14.sp)
         }
     }
 }
@@ -198,198 +252,359 @@ private fun Mark() {
     }
 }
 
+// ── Home ─────────────────────────────────────────────────────────────────────
+
 @Composable
 private fun Home(model: HarmonicModel) {
-    SubtleWave()
+    homeNote(model.status)?.let {
+        Notice(it, OfflineText)
+        Spacer(Modifier.height(16.dp))
+    }
+    MachineSetup(model)
     Spacer(Modifier.height(20.dp))
-    Text(
-        "Put two or more phones on the machine, record together, and read a plain-language fault call with an ISO severity zone.",
-        color = Paper,
-        fontSize = 16.sp,
-        lineHeight = 22.sp,
-    )
-    Spacer(Modifier.height(10.dp))
-    Text(
-        "Screen up. Top edge toward the drive end. Tap the phones together when the trace starts and again near the end.",
-        color = Mist,
-        fontSize = 13.sp,
-        lineHeight = 18.sp,
-    )
-    Spacer(Modifier.height(24.dp))
-    PrimaryButton("Host a session", enabled = FirebaseGate.ready && !model.busy) { model.host() }
-    Spacer(Modifier.height(10.dp))
-    PrimaryButton("Join with a code", enabled = FirebaseGate.ready && !model.busy) { model.openJoin() }
-    Spacer(Modifier.height(10.dp))
-    PrimaryButton("Record this phone only") { model.recordThisPhone() }
-    if (BuildConfig.DEBUG) {
-        TextButton(
-            onClick = { model.openLobbyPreview() },
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text("Preview the session lobby", color = Phosphor, fontWeight = FontWeight.SemiBold)
+    PlacementHint("Lay the phone flat on the machine, screen up, close to the motor or a bearing.")
+    Spacer(Modifier.height(20.dp))
+    PrimaryButton("Start check", enabled = model.sensorOk) { model.recordThisPhone() }
+    if (!model.sensorOk) {
+        Spacer(Modifier.height(8.dp))
+        Text("This phone has no motion sensor, so it can't run a check.", color = OfflineText, fontSize = 15.sp)
+    }
+    if (FirebaseGate.ready) {
+        Spacer(Modifier.height(28.dp))
+        Text("Checking with more than one phone?", color = Paper, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(4.dp))
+        Text("More phones on one machine give a surer answer.", color = Mist, fontSize = 15.sp, lineHeight = 21.sp)
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            SecondaryButton("Use more phones", Modifier.weight(1f), enabled = !model.busy) { model.host() }
+            SecondaryButton("Join a phone", Modifier.weight(1f), enabled = !model.busy) { model.openJoin() }
         }
     }
-    if (!model.sensorOk) {
-        Text("No accelerometer on this device.", color = Color(0xFFFFB020), modifier = Modifier.padding(top = 8.dp))
+    if (BuildConfig.DEBUG) {
+        Spacer(Modifier.height(8.dp))
+        TextButton(onClick = { model.openLobbyPreview() }, modifier = Modifier.fillMaxWidth()) {
+            Text("Preview the session lobby (debug)", color = Mist, fontSize = 14.sp)
+        }
     }
-    if (!FirebaseGate.ready) {
-        Text(
-            "Add google-services.json to enable sessions and hybrid Gemini. A single-phone reading still runs the DSP.",
-            color = Mist,
-            fontSize = 12.sp,
-            modifier = Modifier.padding(top = 12.dp),
+}
+
+/** Sign-in chatter stays hidden; only a real connection problem is shown. */
+private fun homeNote(status: String): String? = when {
+    status.isBlank() || status == "Signed in" || status == "Signing in…" -> null
+    BuildConfig.DEBUG -> status
+    else -> "Can't connect right now. Checks still work on this phone."
+}
+
+/** Machine picture choice, size, and optional speed. Shared by Home and the host lobby. */
+@Composable
+private fun MachineSetup(model: HarmonicModel) {
+    Text("What are you checking?", color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+    Spacer(Modifier.height(14.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Machines.forEach { option ->
+            MachineTile(
+                option = option,
+                selected = model.machineType == option.id,
+                modifier = Modifier.weight(1f),
+            ) { model.machineType = option.id }
+        }
+    }
+    Spacer(Modifier.height(8.dp))
+    Text("Pick Motor for augers, mixers, conveyors and other belt or shaft drives.", color = Mist, fontSize = 14.sp, lineHeight = 20.sp)
+    Spacer(Modifier.height(22.dp))
+    Text("How big is the motor?", color = Paper, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+    Spacer(Modifier.height(10.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        ChoiceTile("Under 20 hp", !model.isLargeMachine, Modifier.weight(1f)) { model.setLargeMachine(false) }
+        ChoiceTile("20 hp or more", model.isLargeMachine, Modifier.weight(1f)) { model.setLargeMachine(true) }
+    }
+    Spacer(Modifier.height(14.dp))
+    var showMore by rememberSaveable { mutableStateOf(model.rpmText.isNotBlank()) }
+    if (!showMore) {
+        TextButton(onClick = { showMore = true }) {
+            Text("I know the motor speed (RPM)", color = Phosphor, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        }
+    } else {
+        OutlinedTextField(
+            value = model.rpmText,
+            onValueChange = { model.rpmText = it.filter { ch -> ch.isDigit() }.take(5) },
+            label = { Text("Motor speed (RPM) — optional") },
+            supportingText = { Text("On the motor's label. Leave blank if you don't know.", color = Mist) },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            modifier = Modifier.fillMaxWidth(),
+            colors = FieldColors,
+            singleLine = true,
         )
     }
 }
 
 @Composable
+private fun MachineTile(option: MachineOption, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val stroke = if (selected) Phosphor else Paper
+    Column(
+        modifier
+            .heightIn(min = 112.dp)
+            .background(if (selected) Phosphor.copy(alpha = 0.12f) else Panel, RoundedCornerShape(14.dp))
+            .border(if (selected) 2.dp else 1.dp, if (selected) Phosphor else Line, RoundedCornerShape(14.dp))
+            .clickable(role = Role.RadioButton, onClick = onClick)
+            .semantics { contentDescription = option.label + if (selected) ", selected" else "" }
+            .padding(vertical = 14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Canvas(Modifier.size(52.dp)) { drawMachine(option.icon, stroke) }
+        Spacer(Modifier.height(8.dp))
+        Text(option.label, color = stroke, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+/** Line pictograms drawn in one stroke weight so they read at a glance outdoors. */
+private fun DrawScope.drawMachine(icon: MachineIcon, color: Color) {
+    val w = size.width
+    val h = size.height
+    val s = Stroke(width = w * 0.06f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    when (icon) {
+        MachineIcon.Pump -> {
+            // Volute casing, outlet pipe and base.
+            drawCircle(color, radius = w * 0.26f, center = Offset(w * 0.42f, h * 0.55f), style = s)
+            drawCircle(color, radius = w * 0.07f, center = Offset(w * 0.42f, h * 0.55f), style = s)
+            val pipe = Path().apply {
+                moveTo(w * 0.52f, h * 0.31f)
+                lineTo(w * 0.52f, h * 0.14f)
+                lineTo(w * 0.86f, h * 0.14f)
+            }
+            drawPath(pipe, color, style = s)
+            drawLine(color, Offset(w * 0.68f, h * 0.31f), Offset(w * 0.68f, h * 0.14f), strokeWidth = s.width, cap = StrokeCap.Round)
+            drawLine(color, Offset(w * 0.10f, h * 0.90f), Offset(w * 0.78f, h * 0.90f), strokeWidth = s.width, cap = StrokeCap.Round)
+        }
+        MachineIcon.Fan -> {
+            val c = Offset(w / 2f, h / 2f)
+            drawCircle(color, radius = w * 0.44f, center = c, style = s)
+            for (i in 0 until 3) {
+                rotate(degrees = i * 120f, pivot = c) {
+                    val blade = Path().apply {
+                        moveTo(c.x, c.y)
+                        quadraticTo(c.x - w * 0.20f, c.y - h * 0.18f, c.x - w * 0.04f, c.y - h * 0.36f)
+                        quadraticTo(c.x + w * 0.10f, c.y - h * 0.20f, c.x, c.y)
+                    }
+                    drawPath(blade, color, style = s)
+                }
+            }
+            drawCircle(color, radius = w * 0.05f, center = c)
+        }
+        MachineIcon.Motor -> {
+            // Finned body, shaft and feet.
+            drawRoundRect(
+                color,
+                topLeft = Offset(w * 0.10f, h * 0.26f),
+                size = Size(w * 0.58f, h * 0.44f),
+                cornerRadius = CornerRadius(w * 0.08f),
+                style = s,
+            )
+            for (i in 1..3) {
+                val x = w * (0.10f + 0.58f * i / 4f)
+                drawLine(color, Offset(x, h * 0.34f), Offset(x, h * 0.62f), strokeWidth = s.width * 0.8f, cap = StrokeCap.Round)
+            }
+            drawLine(color, Offset(w * 0.68f, h * 0.48f), Offset(w * 0.92f, h * 0.48f), strokeWidth = s.width, cap = StrokeCap.Round)
+            drawLine(color, Offset(w * 0.20f, h * 0.70f), Offset(w * 0.14f, h * 0.84f), strokeWidth = s.width, cap = StrokeCap.Round)
+            drawLine(color, Offset(w * 0.58f, h * 0.70f), Offset(w * 0.64f, h * 0.84f), strokeWidth = s.width, cap = StrokeCap.Round)
+            drawLine(color, Offset(w * 0.06f, h * 0.84f), Offset(w * 0.74f, h * 0.84f), strokeWidth = s.width, cap = StrokeCap.Round)
+        }
+    }
+}
+
+@Composable
+private fun ChoiceTile(label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    Box(
+        modifier
+            .heightIn(min = 56.dp)
+            .background(if (selected) Phosphor.copy(alpha = 0.12f) else Panel, RoundedCornerShape(12.dp))
+            .border(if (selected) 2.dp else 1.dp, if (selected) Phosphor else Line, RoundedCornerShape(12.dp))
+            .clickable(role = Role.RadioButton, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, color = if (selected) Phosphor else Paper, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun PlacementHint(text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Canvas(Modifier.size(44.dp)) {
+            // A phone lying flat on a machine housing.
+            val w = size.width
+            val h = size.height
+            val s = Stroke(width = w * 0.05f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            drawRoundRect(Mist, Offset(w * 0.06f, h * 0.56f), Size(w * 0.88f, h * 0.34f), CornerRadius(w * 0.08f), style = s)
+            drawRoundRect(Phosphor, Offset(w * 0.22f, h * 0.38f), Size(w * 0.56f, h * 0.14f), CornerRadius(w * 0.05f))
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(text, color = Paper, fontSize = 16.sp, lineHeight = 22.sp)
+    }
+}
+
+// ── Join ─────────────────────────────────────────────────────────────────────
+
+@Composable
 private fun Join(model: HarmonicModel) {
     var code by remember { mutableStateOf("") }
-    Text("Join a session", color = Paper, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+    Text("Join another phone", color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Bold)
     Spacer(Modifier.height(8.dp))
-    Text("Enter the 6-character code from the host phone.", color = Mist, fontSize = 13.sp)
-    Spacer(Modifier.height(16.dp))
+    Text("Type the code shown on the first phone.", color = Mist, fontSize = 16.sp)
+    Spacer(Modifier.height(18.dp))
     OutlinedTextField(
         value = code,
-        onValueChange = { code = it.uppercase().take(6) },
-        label = { Text("Session code") },
+        onValueChange = { code = it.uppercase().filter { ch -> ch.isLetterOrDigit() }.take(6) },
+        label = { Text("Code") },
+        textStyle = MaterialTheme.typography.headlineSmall.copy(letterSpacing = 6.sp, fontWeight = FontWeight.Bold),
         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
         modifier = Modifier.fillMaxWidth(),
         colors = FieldColors,
         singleLine = true,
     )
-    Spacer(Modifier.height(16.dp))
-    PrimaryButton("Join", enabled = code.length >= 4 && !model.busy) { model.join(code) }
+    Spacer(Modifier.height(18.dp))
+    PrimaryButton(if (model.busy) "Joining…" else "Join", enabled = code.length == 6 && !model.busy) { model.join(code) }
     Spacer(Modifier.height(10.dp))
     SecondaryButton("Back") { model.home() }
 }
+
+// ── Lobby ────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun Lobby(model: HarmonicModel) {
     val live = model.session
     if (model.isPreview) {
-        PreviewBanner("Debug preview — not a live Firebase session.")
+        Notice("Debug preview. Not a live session.", OfflineText)
         Spacer(Modifier.height(16.dp))
     }
-    Text("Session code", color = Mist, fontSize = 12.sp, letterSpacing = 1.sp)
-    Text(live?.code ?: model.code, color = Phosphor, fontSize = 36.sp, fontWeight = FontWeight.Black, letterSpacing = 6.sp)
-    val code = live?.code ?: model.code
-    if (code.isNotBlank()) {
-        Spacer(Modifier.height(12.dp))
-        Box(
-            Modifier
-                .background(Color.White, RoundedCornerShape(16.dp))
-                .padding(12.dp),
-        ) {
-            Image(
-                bitmap = remember(code) { qrImage(code) },
-                contentDescription = "QR code for $code",
-                modifier = Modifier.size(180.dp),
-            )
-        }
-    }
-    Spacer(Modifier.height(12.dp))
-    Text("Others type this code or scan the QR. Android and iPhone can share one session.", color = Mist, fontSize = 13.sp, lineHeight = 18.sp)
-    Spacer(Modifier.height(16.dp))
-    Text("On this session", color = Paper, fontWeight = FontWeight.SemiBold)
-    Spacer(Modifier.height(6.dp))
-    live?.members?.forEach { Text("•  ${it.name}  ·  ${it.platform}", color = Paper, fontSize = 15.sp) }
-        ?: Text("Connecting…", color = Mist)
-    Spacer(Modifier.height(20.dp))
-    if (model.isOwner) {
-        MachineForm(model)
-        Spacer(Modifier.height(16.dp))
-        PrimaryButton("Start recording", enabled = !model.busy) {
-            model.startSessionRecording()
-        }
-    } else {
-        Text("Waiting for the host to start. Keep the phone on the bearing.", color = Paper)
-    }
+    if (model.isOwner) HostLobby(model, live) else JoinerLobby(model, live)
     Spacer(Modifier.height(10.dp))
-    SecondaryButton(if (model.isPreview) "Close preview" else "Leave session") { model.home() }
+    SecondaryButton(if (model.isPreview) "Close preview" else "Leave") { model.home() }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun MachineForm(model: HarmonicModel) {
-    Text("Machine", color = Paper, fontWeight = FontWeight.SemiBold)
-    Spacer(Modifier.height(8.dp))
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        MachineOptions.forEach { (id, label) ->
-            ChoiceChip(selected = model.machineType == id, label = label) { model.machineType = id }
+private fun HostLobby(model: HarmonicModel, live: LiveSession?) {
+    val code = live?.code ?: model.code
+    Text("Add the other phones", color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+    Spacer(Modifier.height(6.dp))
+    Text("On each phone, tap Join a phone and type this code, or scan it.", color = Mist, fontSize = 16.sp, lineHeight = 22.sp)
+    Spacer(Modifier.height(16.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        if (code.isNotBlank()) {
+            Box(Modifier.background(Color.White, RoundedCornerShape(12.dp)).padding(8.dp)) {
+                Image(
+                    bitmap = remember(code) { qrImage(code) },
+                    contentDescription = "QR code for $code",
+                    modifier = Modifier.size(120.dp),
+                )
+            }
+            Spacer(Modifier.width(16.dp))
+        }
+        Column {
+            Text("Code", color = Mist, fontSize = 14.sp)
+            Text(code, color = Phosphor, fontSize = 34.sp, fontWeight = FontWeight.Black, letterSpacing = 4.sp)
         }
     }
-    Spacer(Modifier.height(12.dp))
-    OutlinedTextField(
-        value = model.rpmText,
-        onValueChange = { model.rpmText = it.filter { ch -> ch.isDigit() }.take(5) },
-        label = { Text("Nameplate RPM") },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-        modifier = Modifier.fillMaxWidth(),
-        colors = FieldColors,
-        singleLine = true,
-    )
-    Spacer(Modifier.height(12.dp))
-    Text("ISO class", color = Paper, fontWeight = FontWeight.SemiBold)
-    Spacer(Modifier.height(8.dp))
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        IsoOptions.forEach { (id, label) ->
-            ChoiceChip(selected = model.isoClass == id, label = label) { model.isoClass = id }
-        }
-    }
-    Spacer(Modifier.height(12.dp))
-    Text("Record ${model.seconds}s", color = Mist, fontSize = 13.sp)
-    Spacer(Modifier.height(8.dp))
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        listOf(10, 12, 20, 40).forEach { s ->
-            ChoiceChip(selected = model.seconds == s, label = "${s}s") { model.seconds = s }
-        }
-    }
+    Spacer(Modifier.height(16.dp))
+    PhoneCount(live)
+    Spacer(Modifier.height(24.dp))
+    MachineSetup(model)
+    Spacer(Modifier.height(20.dp))
+    PlacementHint("Lay every phone flat on the machine, screen up. Spread them out: one near the motor, one near the far bearing.")
+    Spacer(Modifier.height(20.dp))
+    PrimaryButton("Start check on all phones", enabled = !model.busy) { model.startSessionRecording() }
 }
+
+@Composable
+private fun JoinerLobby(model: HarmonicModel, live: LiveSession?) {
+    val uploaded = model.status.startsWith("Uploaded")
+    Text(if (uploaded) "Done on this phone" else "You're connected", color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+    Spacer(Modifier.height(8.dp))
+    Text(
+        if (uploaded) "Waiting for the first phone to work out the result." else
+            "Lay this phone flat on the machine, screen up. The check starts by itself when the first phone starts it.",
+        color = Paper,
+        fontSize = 17.sp,
+        lineHeight = 24.sp,
+    )
+    Spacer(Modifier.height(16.dp))
+    PhoneCount(live)
+    Spacer(Modifier.height(20.dp))
+}
+
+@Composable
+private fun PhoneCount(live: LiveSession?) {
+    val n = live?.members?.size ?: 0
+    Text(
+        when (n) {
+            0 -> "Connecting…"
+            1 -> "1 phone connected"
+            else -> "$n phones connected"
+        },
+        color = Paper,
+        fontSize = 17.sp,
+        fontWeight = FontWeight.SemiBold,
+    )
+}
+
+// ── Record ───────────────────────────────────────────────────────────────────
 
 @Composable
 private fun Record(model: HarmonicModel) {
+    if (model.analyzing) {
+        Text("Working out the result…", color = Paper, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(16.dp))
+        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Phosphor, trackColor = Line)
+        Spacer(Modifier.height(12.dp))
+        Text("You can pick the phone up now.", color = Mist, fontSize = 16.sp)
+        return
+    }
     val total = model.seconds.coerceAtLeast(1)
-    val tapFresh = model.lastTapAt != 0L && SystemClock.elapsedRealtime() - model.lastTapAt < 2000
-    Text(if (model.analyzing) "Analyzing" else "Recording", color = Paper, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+    val left = ceil(total - model.elapsed).toInt().coerceAtLeast(0)
+    val tapFresh = model.lastTapAt != 0L && SystemClock.elapsedRealtime() - model.lastTapAt < 1500
+    val (step, help) = when {
+        !model.syncTaps -> "Keep the phone still" to "Don't touch it. It's feeling the machine shake."
+        model.recordStep == 0 -> "Tap the phones together" to "One firm tap, then put them back on the machine."
+        model.recordStep == 2 -> "Tap them together again" to "One more firm tap."
+        else -> "Keep the phones still" to "Don't touch them. They're feeling the machine shake."
+    }
+    if (model.syncTaps) {
+        Text("Step ${model.recordStep + 1} of 3", color = Mist, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(4.dp))
+    }
+    Text(step, color = Phosphor, fontSize = 30.sp, fontWeight = FontWeight.Black, lineHeight = 36.sp)
     Spacer(Modifier.height(8.dp))
-    LinearProgressIndicator(
-        progress = { (model.elapsed / total).coerceIn(0f, 1f) },
-        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-        color = Phosphor,
-        trackColor = Line,
-    )
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text("${model.elapsed.toInt()} / $total s", color = Phosphor, fontWeight = FontWeight.SemiBold)
-        Text("|a| = ${"%.2f".format(model.magnitude)} m/s²", color = Mist)
+    Text(help, color = Paper, fontSize = 17.sp, lineHeight = 24.sp)
+    Spacer(Modifier.height(20.dp))
+    Text(if (left == 1) "1 second left" else "$left seconds left", color = Paper, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+    Spacer(Modifier.height(8.dp))
+    val fraction = (model.elapsed / total).coerceIn(0f, 1f)
+    Canvas(Modifier.fillMaxWidth().height(10.dp)) {
+        val r = CornerRadius(size.height / 2f)
+        drawRoundRect(Line, cornerRadius = r)
+        if (fraction > 0f) drawRoundRect(Phosphor, size = Size(size.width * fraction, size.height), cornerRadius = r)
     }
-    Spacer(Modifier.height(12.dp))
+    Spacer(Modifier.height(16.dp))
     LiveTrace(model.trace)
-    Spacer(Modifier.height(12.dp))
-    val cue = when {
-        model.analyzing -> "Running the on-device DSP and hybrid model."
-        model.elapsed < 2.5f -> "Tap the phones together now."
-        model.elapsed > total - 2.5f -> "Tap them together once more."
-        else -> "Hold still on the bearing housing."
+    if (model.syncTaps) {
+        Spacer(Modifier.height(12.dp))
+        Text(
+            when {
+                tapFresh -> "Tap felt"
+                model.tapCount > 0 -> "Taps felt: ${model.tapCount}"
+                else -> "No tap felt yet"
+            },
+            color = if (tapFresh) Phosphor else Mist,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+        )
     }
-    Text(cue, color = Paper, fontSize = 16.sp, lineHeight = 22.sp)
-    if (tapFresh || model.tapCount > 0) {
-        Spacer(Modifier.height(10.dp))
-        val label = if (tapFresh) "Tap detected" else "Taps detected: ${model.tapCount}"
-        Box(
-            Modifier
-                .background(if (tapFresh) Phosphor else Panel, RoundedCornerShape(50))
-                .border(1.dp, if (tapFresh) Phosphor else Line, RoundedCornerShape(50))
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-        ) {
-            Text(label, color = if (tapFresh) Ink else Phosphor, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-        }
-    }
-    if (!model.analyzing) {
-        Spacer(Modifier.height(20.dp))
-        SecondaryButton("Cancel") { model.cancelRecording() }
-    }
+    Spacer(Modifier.height(24.dp))
+    SecondaryButton("Cancel") { model.cancelRecording() }
 }
+
+// ── Result ───────────────────────────────────────────────────────────────────
 
 @Composable
 private fun Result(model: HarmonicModel) {
@@ -399,91 +614,98 @@ private fun Result(model: HarmonicModel) {
         return
     }
     val dx = shown.diagnosis
-    val zoneColor = ZoneColor[dx.severityZone] ?: Phosphor
-    Box(
+    val verdict = Verdicts[dx.severityZone] ?: Verdicts.getValue("B")
+    val fault = dx.fault.takeIf { it in FaultName } ?: "unknown"
+    Column(
         Modifier
             .fillMaxWidth()
-            .background(Panel, RoundedCornerShape(16.dp))
-            .padding(20.dp),
+            .background(verdict.color, RoundedCornerShape(18.dp))
+            .padding(horizontal = 20.dp, vertical = 22.dp),
     ) {
-        Column {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text(dx.severityZone, color = zoneColor, fontSize = 64.sp, fontWeight = FontWeight.Black)
-                Column {
-                    Text(dx.fault.replace('_', ' '), color = Paper, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(2.dp))
-                    Text("Confidence ${(dx.confidence * 100).toInt()}%", color = Mist, fontSize = 13.sp)
-                    Spacer(Modifier.height(8.dp))
-                    SourceBadge(dx.inferenceSource)
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-            Text(dx.summary, color = Paper, fontSize = 16.sp, lineHeight = 22.sp)
-            if (dx.recommendedAction.isNotBlank() && !dx.summary.contains(dx.recommendedAction)) {
-                Spacer(Modifier.height(10.dp))
-                Text(dx.recommendedAction, color = Paper, fontSize = 15.sp, lineHeight = 21.sp)
-            }
-            if (shown.platforms.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                Text("Phones: ${shown.platforms.joinToString()}", color = Mist, fontSize = 12.sp)
-            }
+        Text(verdict.title, color = Ink, fontSize = 36.sp, fontWeight = FontWeight.Black, lineHeight = 40.sp)
+        Spacer(Modifier.height(4.dp))
+        Text(FaultName.getValue(fault), color = Ink, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+    }
+    Spacer(Modifier.height(20.dp))
+    Text(FaultMeaning.getValue(fault), color = Paper, fontSize = 17.sp, lineHeight = 24.sp)
+    Spacer(Modifier.height(20.dp))
+    Text("What to do", color = Mist, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+    Spacer(Modifier.height(4.dp))
+    Text(
+        plainAction(dx, fault),
+        color = Paper,
+        fontSize = 20.sp,
+        lineHeight = 27.sp,
+        fontWeight = FontWeight.SemiBold,
+    )
+    Spacer(Modifier.height(20.dp))
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(sureness(dx.confidence), color = Paper, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        SourceBadge(dx.inferenceSource)
+    }
+    Spacer(Modifier.height(24.dp))
+    PrimaryButton("Check again") { model.home() }
+    Spacer(Modifier.height(8.dp))
+    var details by rememberSaveable { mutableStateOf(false) }
+    TextButton(onClick = { details = !details }, modifier = Modifier.fillMaxWidth()) {
+        Text(if (details) "Hide details" else "Show details", color = Phosphor, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+    }
+    if (details) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .background(Panel, RoundedCornerShape(14.dp))
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            DetailLine("ISO 10816 zone", "${dx.severityZone} (${IsoLabel[dx.severityZone] ?: "?"})")
+            DetailLine("Confidence", "${(dx.confidence * 100).toInt()}%")
+            DetailLine("Fault code", dx.faultDetail.replace('_', ' '))
+            if (shown.platforms.isNotEmpty()) DetailLine("Phones", shown.platforms.joinToString())
+            if (dx.summary.isNotBlank()) Text(dx.summary, color = Paper, fontSize = 15.sp, lineHeight = 21.sp)
+            dx.evidence.forEach { Text("• $it", color = Mist, fontSize = 14.sp, lineHeight = 20.sp) }
             if (shown.gate.actions.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                Text("Physics gate: ${shown.gate.actions.joinToString { it.action }}", color = Mist, fontSize = 12.sp)
+                Text("Physics check: ${shown.gate.actions.joinToString { it.action }}", color = Mist, fontSize = 14.sp)
             }
         }
     }
-    Spacer(Modifier.height(20.dp))
-    PrimaryButton("New reading") { model.home() }
+}
+
+private fun sureness(confidence: Double): String = when {
+    confidence >= 0.75 -> "Sure"
+    confidence >= 0.5 -> "Fairly sure"
+    else -> "Not sure. Check again."
+}
+
+@Composable
+private fun DetailLine(label: String, value: String) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, color = Mist, fontSize = 14.sp)
+        Text(value, color = Paper, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+    }
 }
 
 @Composable
 private fun SourceBadge(source: String) {
     val (label, bg, fg) = when (source) {
-        "on_device" -> Triple("Answered on device", Phosphor.copy(alpha = 0.16f), Phosphor)
-        "cloud", "cloud_refinement" -> Triple("Answered in the cloud", CloudFill, Cloud)
-        else -> Triple("Physics estimate", PhysicsFill, PhysicsText)
+        "on_device" -> Triple("AI on this phone", Phosphor.copy(alpha = 0.16f), Phosphor)
+        "cloud", "cloud_refinement" -> Triple("AI in the cloud", CloudFill, Cloud)
+        else -> Triple("Offline check", OfflineFill, OfflineText)
     }
     Box(
         Modifier
             .background(bg, RoundedCornerShape(50))
-            .padding(horizontal = 10.dp, vertical = 5.dp),
+            .padding(horizontal = 12.dp, vertical = 6.dp),
     ) {
-        Text(label, color = fg, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Text(label, color = fg, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 
-@Composable
-private fun ChoiceChip(selected: Boolean, label: String, onClick: () -> Unit) {
-    FilterChip(
-        selected = selected,
-        onClick = onClick,
-        label = { Text(label, fontSize = 13.sp) },
-        colors = FilterChipDefaults.filterChipColors(
-            containerColor = Panel,
-            labelColor = Paper,
-            selectedContainerColor = Phosphor.copy(alpha = 0.18f),
-            selectedLabelColor = Phosphor,
-        ),
-        border = FilterChipDefaults.filterChipBorder(
-            enabled = true,
-            selected = selected,
-            borderColor = Line,
-            selectedBorderColor = Phosphor,
-        ),
-    )
-}
+// ── Shared pieces ────────────────────────────────────────────────────────────
 
 @Composable
-private fun PreviewBanner(text: String) {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .background(PhysicsFill, RoundedCornerShape(10.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-    ) {
-        Text(text, color = PhysicsText, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-    }
+private fun Notice(text: String, color: Color) {
+    Text(text, color = color, fontSize = 15.sp, lineHeight = 21.sp)
 }
 
 @Composable
@@ -491,54 +713,46 @@ private fun PrimaryButton(label: String, enabled: Boolean = true, onClick: () ->
     Button(
         onClick = onClick,
         enabled = enabled,
-        modifier = Modifier.fillMaxWidth().height(52.dp),
-        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth().height(60.dp),
+        shape = RoundedCornerShape(12.dp),
         colors = ButtonDefaults.buttonColors(
             containerColor = Phosphor,
             contentColor = Ink,
             disabledContainerColor = DisabledFill,
             disabledContentColor = DisabledText,
         ),
-    ) { Text(label, fontWeight = FontWeight.Bold, fontSize = 16.sp) }
+    ) { Text(label, fontWeight = FontWeight.Bold, fontSize = 18.sp) }
 }
 
 @Composable
-private fun SecondaryButton(label: String, enabled: Boolean = true, onClick: () -> Unit) {
+private fun SecondaryButton(
+    label: String,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
     OutlinedButton(
         onClick = onClick,
         enabled = enabled,
-        modifier = Modifier.fillMaxWidth().height(52.dp),
-        shape = RoundedCornerShape(10.dp),
+        modifier = modifier.heightIn(min = 56.dp),
+        shape = RoundedCornerShape(12.dp),
         border = BorderStroke(1.dp, Line),
         colors = ButtonDefaults.outlinedButtonColors(contentColor = Paper, disabledContentColor = Mist),
     ) { Text(label, fontWeight = FontWeight.SemiBold, fontSize = 16.sp) }
 }
 
 @Composable
-private fun SubtleWave() {
-    Canvas(Modifier.fillMaxWidth().height(64.dp).background(Panel, RoundedCornerShape(12.dp))) {
-        val path = Path()
-        val mid = size.height / 2f
-        val amp = size.height * 0.18f
-        path.moveTo(0f, mid)
-        val steps = 64
-        for (i in 0..steps) {
-            val x = size.width * i / steps
-            val y = mid + amp * sin(i / 5.5f).toFloat()
-            path.lineTo(x, y)
-        }
-        drawPath(path, Phosphor.copy(alpha = 0.45f), style = Stroke(width = 2f, cap = StrokeCap.Round))
-    }
-}
-
-@Composable
 private fun LiveTrace(samples: FloatArray) {
-    Canvas(Modifier.fillMaxWidth().height(140.dp).background(Panel, RoundedCornerShape(12.dp))) {
+    Canvas(
+        Modifier
+            .fillMaxWidth()
+            .height(110.dp)
+            .background(Panel, RoundedCornerShape(12.dp))
+            .semantics { contentDescription = "Live shaking trace" },
+    ) {
         val mid = size.height / 2f
         drawLine(Line, Offset(16f, mid), Offset(size.width - 16f, mid), strokeWidth = 1.2f)
-        if (samples.size < 2) {
-            return@Canvas
-        }
+        if (samples.size < 2) return@Canvas
         val peak = samples.maxOf { abs(it) }.coerceAtLeast(0.75f)
         val path = Path()
         val usable = size.width - 16f
@@ -547,10 +761,6 @@ private fun LiveTrace(samples: FloatArray) {
             val y = mid - (v / peak) * (size.height * 0.42f)
             if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
-        drawPath(
-            path,
-            Phosphor,
-            style = Stroke(width = 2.6f, cap = StrokeCap.Round, join = StrokeJoin.Round),
-        )
+        drawPath(path, Phosphor, style = Stroke(width = 2.6f, cap = StrokeCap.Round, join = StrokeJoin.Round))
     }
 }

@@ -54,9 +54,23 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
     var uid by mutableStateOf<String?>(null)
         private set
     var machineType by mutableStateOf("fan")
-    var rpmText by mutableStateOf("1200")
+    /** Blank means "I don't know"; the DSP then assumes [DEFAULT_RPM]. */
+    var rpmText by mutableStateOf("")
     var isoClass by mutableStateOf("class_I")
-    var seconds by mutableStateOf(12)
+    var seconds by mutableStateOf(DEFAULT_SECONDS)
+        private set
+    /** True when phones should be tapped together (multi-phone sessions). */
+    var syncTaps by mutableStateOf(false)
+        private set
+    /** 0 = first tap, 1 = hold still, 2 = second tap. Single-phone stays at 1. */
+    var recordStep by mutableStateOf(1)
+        private set
+    val isLargeMachine: Boolean get() = isoClass != "class_I"
+    private val effectiveRpm: Double get() = rpmText.toDoubleOrNull()?.takeIf { it >= 60 } ?: DEFAULT_RPM
+
+    fun setLargeMachine(large: Boolean) {
+        isoClass = if (large) "group2_rigid" else "class_I"
+    }
     var elapsed by mutableStateOf(0f)
         private set
     var magnitude by mutableStateOf(0f)
@@ -128,7 +142,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         val id = session?.id ?: return@launchAction
         if (!isOwner) return@launchAction
         // Save the machine first so every phone records with the host's settings.
-        sessions.updateMachine(id, machineType, rpmText.toDoubleOrNull() ?: 1200.0, isoClass, seconds)
+        sessions.updateMachine(id, machineType, effectiveRpm, isoClass, seconds)
         sessions.markRecording(id, seconds)
     }
 
@@ -137,6 +151,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         captureJob = viewModelScope.launch {
             error = null
             analyzing = false
+            syncTaps = false
             tapCount = 0
             lastTapAt = 0L
             trace = floatArrayOf()
@@ -193,7 +208,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
             status = "lobby",
             members = listOf(Member("preview", "android", "This phone")),
             machineType = machineType,
-            rpm = rpmText.toDoubleOrNull() ?: 1200.0,
+            rpm = effectiveRpm,
             isoClass = isoClass,
             recordSeconds = seconds,
             diagnosis = null,
@@ -239,9 +254,9 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
                     if (!isOwner) {
                         // Joiners follow the host's machine settings and duration.
                         machineType = live.machineType
-                        rpmText = live.rpm.toInt().toString()
+                        rpmText = if (live.rpm == DEFAULT_RPM) "" else live.rpm.toInt().toString()
                         isoClass = live.isoClass
-                        seconds = live.recordSeconds
+                        seconds = live.recordSeconds.coerceIn(MIN_SECONDS, MAX_SECONDS)
                     }
                     val recKey = live.id + ":rec"
                     if (live.status == "recording" && recKey !in shown) {
@@ -271,6 +286,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun captureAndUpload(live: LiveSession) {
         error = null
+        syncTaps = true
         screen = Screen.Record
         try {
             val analysis = capture()
@@ -358,11 +374,24 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         try {
             val total = seconds
             val steps = total * 10
+            recordStep = if (syncTaps) 0 else 1
+            if (syncTaps) pulseTap(120)
             repeat(steps) { i ->
                 delay(100)
                 elapsed = (i + 1) / 10f
                 magnitude = recorder.lastMagnitude
                 trace = recorder.snapshotTrace()
+                val step = when {
+                    !syncTaps -> 1
+                    elapsed < TAP_WINDOW_S -> 0
+                    elapsed > total - TAP_WINDOW_S -> 2
+                    else -> 1
+                }
+                if (step != recordStep) {
+                    recordStep = step
+                    // A buzz on each step change, since the screen may not be in view.
+                    pulseTap(120)
+                }
                 val taps = recorder.consumeTaps()
                 if (taps > 0) {
                     tapCount += taps
@@ -370,6 +399,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
                     pulseTap()
                 }
             }
+            pulseTap(300)
         } catch (e: CancellationException) {
             recorder.stop()
             throw e
@@ -377,13 +407,13 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         val recording = recorder.stop()
         if (recording.raw.size < 32) error("Not enough samples (${recording.raw.size}). Is the accelerometer available?")
         return recording.analyze(
-            rpmText.toDoubleOrNull() ?: session?.rpm ?: 1200.0,
+            effectiveRpm,
             isoClass,
             config.thresholds,
         )
     }
 
-    private fun pulseTap() {
+    private fun pulseTap(ms: Long = 40) {
         val app = getApplication<Application>()
         val vibrator = if (Build.VERSION.SDK_INT >= 31) {
             app.getSystemService(VibratorManager::class.java)?.defaultVibrator
@@ -392,7 +422,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
             app.getSystemService(Vibrator::class.java)
         } ?: return
         if (!vibrator.hasVibrator()) return
-        vibrator.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE))
+        vibrator.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE))
     }
 
     private fun featuresFor(
@@ -402,7 +432,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         coherence: Map<String, Double?>,
         syncConf: Double,
         type: String = machineType,
-        rpm: Double = rpmText.toDoubleOrNull() ?: 1200.0,
+        rpm: Double = effectiveRpm,
         iso: String = isoClass,
     ): Map<String, Any?> {
         val vel = linkedMapOf<String, Double?>(
@@ -448,7 +478,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
                 "model_cloud_refine" to "gemini-3.8-flash",
                 "model_cloud_fallback" to "gemini-3.5-flash-lite",
                 "prompt_version" to "v1",
-                "record_seconds" to 12L,
+                "record_seconds" to DEFAULT_SECONDS.toLong(),
                 "coherence_min" to 0.8,
                 "ambiguity_delta_p" to 0.2,
                 "escalate_on_zone" to "[\"C\",\"D\"]",
@@ -467,7 +497,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
             cloudRefineModel = rc.getString("model_cloud_refine").ifBlank { "gemini-3.8-flash" },
             cloudFallbackModel = rc.getString("model_cloud_fallback").ifBlank { "gemini-3.5-flash-lite" },
             promptVersion = rc.getString("prompt_version").ifBlank { "v1" },
-            recordSeconds = rc.getLong("record_seconds").toInt().coerceIn(8, 60),
+            recordSeconds = rc.getLong("record_seconds").toInt().coerceIn(MIN_SECONDS, MAX_SECONDS),
             settings = GateSettings(
                 coherenceMin = rc.getDouble("coherence_min"),
                 misalignmentMin2xRatio = rc.getDouble("gate_misalignment_min_2x_ratio"),
@@ -512,6 +542,14 @@ data class ShownResult(
 enum class Screen { Home, Join, Lobby, Record, Result }
 
 private const val TAG = "Harmonic"
+
+/** Typical 4-pole farm motor on 60 Hz mains; used when the RPM is left blank. */
+const val DEFAULT_RPM = 1800.0
+const val DEFAULT_SECONDS = 15
+private const val MIN_SECONDS = 8
+private const val MAX_SECONDS = 20
+/** Seconds at the start and end of a multi-phone recording reserved for the sync taps. */
+const val TAP_WINDOW_S = 3f
 
 private data class Cross(val phase: Map<String, Double?>, val coherence: Map<String, Double?>, val syncConf: Double)
 

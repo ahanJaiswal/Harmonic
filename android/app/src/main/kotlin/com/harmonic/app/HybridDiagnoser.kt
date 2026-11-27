@@ -23,7 +23,7 @@ data class HarmonicConfig(
     val cloudRefineModel: String = "gemini-3.8-flash",
     val cloudFallbackModel: String = "gemini-3.5-flash-lite",
     val promptVersion: String = "v1",
-    val recordSeconds: Int = 12,
+    val recordSeconds: Int = DEFAULT_SECONDS,
     val settings: GateSettings = GateSettings(),
     val maxOnDeviceCalls: Int = 3,
     val thresholds: Map<String, com.harmonic.dsp.ZoneThresholds>? = null,

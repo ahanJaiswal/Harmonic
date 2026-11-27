@@ -35,7 +35,7 @@
       "description": "Cap on on-device inference calls per session (Android quota safety)"
     },
     "record_seconds": {
-      "defaultValue": { "value": "40" },
+      "defaultValue": { "value": "15" },
       "description": "Default recording duration in seconds"
     },
     "phase_stability_threshold_deg": {
