@@ -70,7 +70,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
             viewModelScope.launch {
                 runCatching { refreshRemoteConfig() }
                 runCatching { uid = ensureSignedIn(); status = "Signed in" }
-                    .onFailure { status = "Auth failed: ${it.message}" }
+                    .onFailure { status = friendlyFirebaseError(it) }
             }
         }
     }
@@ -115,6 +115,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
             val features = featuresFor(analysis, null, emptyMap(), emptyMap(), 1.0)
             val (dx, gate) = diagnoser.diagnose(features, config)
             result = ShownResult(dx, gate, features, listOf("android"))
+            status = ""
             busy = false
             screen = Screen.Result
         }
@@ -318,7 +319,7 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
             try {
                 block()
             } catch (t: Throwable) {
-                error = t.message ?: t.javaClass.simpleName
+                error = friendlyFirebaseError(t)
             } finally {
                 busy = false
             }
@@ -433,4 +434,16 @@ private fun diagnosisFromMap(map: Map<String, Any?>): ShownResult {
     val gate = GateResult(actions.isEmpty(), actions, emptyMap(), false)
     val platforms = (map["platforms"] as? List<*>)?.map { it.toString() } ?: emptyList()
     return ShownResult(dx, gate, emptyMap(), platforms)
+}
+
+private fun friendlyFirebaseError(t: Throwable): String {
+    val msg = t.message ?: t.javaClass.simpleName
+    return when {
+        msg.contains("CONFIGURATION_NOT_FOUND") ->
+            "Anonymous sign-in is not enabled yet. In the Firebase console, open Authentication, add the Anonymous provider, and try again."
+        msg.contains("App Check token is invalid", ignoreCase = true) ||
+            msg.contains("App attestation failed", ignoreCase = true) ->
+            "App Check rejected this debug build. Register the emulator debug token in Firebase App Check and try again."
+        else -> msg
+    }
 }

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -81,14 +82,20 @@ private fun HarmonicScreen(model: HarmonicModel) {
     Column(
         Modifier
             .fillMaxSize()
+            .systemBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(20.dp)
     ) {
         Text("HARMONIC", color = Phosphor, fontWeight = FontWeight.Black, letterSpacing = 3.sp)
         Text("Multi-phone vibration analyzer", color = Mist, fontSize = 13.sp)
         Spacer(Modifier.height(8.dp))
-        Text(model.status, color = Mist, fontSize = 12.sp)
-        model.error?.let { Text(it, color = Color(0xFFFF5A36), modifier = Modifier.padding(top = 8.dp)) }
+        // Keep session/auth status on Home and Lobby so Recording/Result stay uncluttered.
+        if (model.status.isNotBlank() && (model.screen == Screen.Home || model.screen == Screen.Lobby)) {
+            Text(model.status, color = Mist, fontSize = 12.sp)
+        }
+        if (model.screen == Screen.Home || model.screen == Screen.Join || model.screen == Screen.Lobby) {
+            model.error?.let { Text(it, color = Color(0xFFFF5A36), modifier = Modifier.padding(top = 8.dp)) }
+        }
         Spacer(Modifier.height(16.dp))
         when (model.screen) {
             Screen.Home -> Home(model)
@@ -234,8 +241,10 @@ private fun Result(model: HarmonicModel) {
     }
     Spacer(Modifier.height(12.dp))
     Text(dx.summary, color = Paper)
-    Spacer(Modifier.height(8.dp))
-    Text(dx.recommendedAction, color = Paper)
+    if (dx.recommendedAction.isNotBlank() && !dx.summary.contains(dx.recommendedAction)) {
+        Spacer(Modifier.height(8.dp))
+        Text(dx.recommendedAction, color = Paper)
+    }
     if (shown.platforms.isNotEmpty()) {
         Spacer(Modifier.height(8.dp))
         Text("Phones: ${shown.platforms.joinToString()}", color = Mist, fontSize = 12.sp)
