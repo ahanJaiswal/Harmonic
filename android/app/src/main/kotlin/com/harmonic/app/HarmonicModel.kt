@@ -38,6 +38,19 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
     private val recorder = AccelRecorder(app)
     private val sessions = SessionRepository()
     private val diagnoser = HybridDiagnoser(loadPrompts(app))
+    private val machineStore = MachineStore(app)
+
+    /** Saved machines, most recently checked first. */
+    var machines by mutableStateOf(sortMachines(machineStore.load()))
+        private set
+    /** The machine new checks are logged to; null for an unsaved one-off check. */
+    var activeMachineId by mutableStateOf<String?>(null)
+        private set
+    /** The machine open on the history screen. */
+    var viewedMachineId by mutableStateOf<String?>(null)
+        private set
+    val activeMachine: Machine? get() = machines.firstOrNull { it.id == activeMachineId }
+    val viewedMachine: Machine? get() = machines.firstOrNull { it.id == viewedMachineId }
 
     var config by mutableStateOf(HarmonicConfig())
         private set
@@ -163,7 +176,9 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
                 status = "Analyzing"
                 val features = featuresFor(analysis, null, emptyMap(), emptyMap(), 1.0)
                 val (dx, gate) = diagnoser.diagnose(features, config)
-                result = ShownResult(dx, gate, features, listOf("android"))
+                result = logToActiveMachine(
+                    ShownResult(dx, gate, features, listOf("android"), shakeMmS = maxOf(analysis.velocityH, analysis.velocityV))
+                )
                 status = ""
                 screen = Screen.Result
             } catch (e: CancellationException) {
@@ -238,6 +253,85 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
         analyzing = false
         screen = Screen.Home
         error = null
+    }
+
+    // ── Machine history ─────────────────────────────────────────────────────────
+
+    /** Next checks go to this machine, using its saved type, size and speed. */
+    fun selectMachine(id: String) {
+        val m = machines.firstOrNull { it.id == id } ?: return
+        activeMachineId = m.id
+        machineType = m.type
+        isoClass = m.isoClass
+        rpmText = m.rpmText
+        screen = Screen.Home
+        error = null
+    }
+
+    fun clearActiveMachine() {
+        activeMachineId = null
+    }
+
+    fun openMachine(id: String) {
+        viewedMachineId = id
+        screen = Screen.Machine
+        error = null
+    }
+
+    fun checkMachine(id: String) {
+        selectMachine(id)
+        recordThisPhone()
+    }
+
+    /** Saves the shown (unsaved) result as the first check of a new machine. */
+    fun saveResultAsMachine(rawName: String) {
+        val shown = result ?: return
+        if (shown.machineName != null) return
+        val name = rawName.trim().ifBlank { suggestedMachineName() }.take(40)
+        val machine = Machine(
+            id = MachineStore.newId(),
+            name = name,
+            type = machineType,
+            isoClass = isoClass,
+            rpmText = rpmText,
+            readings = listOf(shown.toReading()),
+        )
+        persist(machines + machine)
+        activeMachineId = machine.id
+        result = shown.copy(machineName = name)
+    }
+
+    fun deleteMachine(id: String) {
+        persist(machines.filterNot { it.id == id })
+        if (activeMachineId == id) activeMachineId = null
+        if (viewedMachineId == id) viewedMachineId = null
+        screen = Screen.Home
+    }
+
+    fun suggestedMachineName(): String {
+        val base = machineType.replaceFirstChar { it.uppercase() }
+        val used = machines.map { it.name }.toSet()
+        return (1..99).map { "$base $it" }.firstOrNull { it !in used } ?: base
+    }
+
+    private fun logToActiveMachine(shown: ShownResult): ShownResult {
+        val m = activeMachine ?: return shown
+        val reading = shown.toReading()
+        val before = m.last
+        val updated = m.copy(type = machineType, isoClass = isoClass, rpmText = rpmText, readings = m.readings + reading)
+        return runCatching {
+            persist(machines.map { if (it.id == m.id) updated else it })
+            shown.copy(machineName = m.name, comparison = compareReadings(reading, before))
+        }.getOrElse {
+            Log.w(TAG, "Could not save the check to ${m.name}", it)
+            shown
+        }
+    }
+
+    private fun persist(list: List<Machine>) {
+        val sorted = sortMachines(list)
+        machineStore.save(sorted)
+        machines = sorted
     }
 
     fun openJoin() {
@@ -358,7 +452,12 @@ class HarmonicModel(app: Application) : AndroidViewModel(app) {
             "platforms" to rows.map { it["platform"]?.toString() ?: "?" },
         )
         sessions.publishDiagnosis(live.id, payload)
-        result = ShownResult(dx, gate, features, rows.map { it["platform"]?.toString() ?: "?" })
+        result = logToActiveMachine(
+            ShownResult(
+                dx, gate, features, rows.map { it["platform"]?.toString() ?: "?" },
+                shakeMmS = maxOf(primary.velocityH, primary.velocityV),
+            )
+        )
         busy = false
         analyzing = false
         status = ""
@@ -537,11 +636,27 @@ data class ShownResult(
     val gate: GateResult,
     val features: Map<String, Any?>,
     val platforms: List<String>,
+    /** Overall shake (velocity RMS, mm/s) on this phone; null when the result came from another phone. */
+    val shakeMmS: Double? = null,
+    /** Set once the check is saved to a machine's history. */
+    val machineName: String? = null,
+    val comparison: Comparison? = null,
 )
 
-enum class Screen { Home, Join, Lobby, Record, Result }
+enum class Screen { Home, Join, Lobby, Record, Result, Machine }
 
 private const val TAG = "Harmonic"
+
+private fun sortMachines(list: List<Machine>) = list.sortedByDescending { it.last?.at ?: 0L }
+
+private fun ShownResult.toReading() = Reading(
+    at = System.currentTimeMillis(),
+    zone = diagnosis.severityZone,
+    fault = diagnosis.fault,
+    shakeMmS = shakeMmS,
+    confidence = diagnosis.confidence,
+    source = diagnosis.inferenceSource,
+)
 
 /** Typical 4-pole farm motor on 60 Hz mains; used when the RPM is left blank. */
 const val DEFAULT_RPM = 1800.0

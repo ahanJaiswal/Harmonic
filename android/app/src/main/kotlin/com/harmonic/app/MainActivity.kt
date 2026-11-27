@@ -248,6 +248,7 @@ private fun HarmonicScreen(model: HarmonicModel) {
             Screen.Lobby -> Lobby(model)
             Screen.Record -> Record(model)
             Screen.Result -> Result(model)
+            Screen.Machine -> MachineHistory(model)
         }
     }
 }
@@ -297,7 +298,16 @@ private fun Home(model: HarmonicModel) {
         Notice(it, OfflineText)
         Spacer(Modifier.height(16.dp))
     }
-    MachineSetup(model)
+    val active = model.activeMachine
+    if (active != null) {
+        ActiveMachineCard(model, active)
+    } else {
+        if (model.machines.isNotEmpty()) {
+            YourMachines(model)
+            Spacer(Modifier.height(32.dp))
+        }
+        MachineSetup(model, if (model.machines.isEmpty()) "What are you checking?" else "Check something new")
+    }
     Spacer(Modifier.height(20.dp))
     PlacementHint("Lay the phone flat on the machine, screen up, close to the motor or a bearing.")
     Spacer(Modifier.height(20.dp))
@@ -334,8 +344,8 @@ private fun homeNote(status: String): String? = when {
 
 /** Machine picture choice, size, and optional speed. Shared by Home and the host lobby. */
 @Composable
-private fun MachineSetup(model: HarmonicModel) {
-    Text("What are you checking?", color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
+private fun MachineSetup(model: HarmonicModel, title: String = "What are you checking?") {
+    Text(title, color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
     Spacer(Modifier.height(14.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Machines.forEach { option ->
@@ -663,6 +673,17 @@ private fun Result(model: HarmonicModel) {
         Spacer(Modifier.height(4.dp))
         Text(FaultName.getValue(fault), color = Ink, fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
     }
+    shown.comparison?.let { c ->
+        Spacer(Modifier.height(14.dp))
+        Text(
+            c.text,
+            color = if (c.worse) Verdicts.getValue("C").color else Verdicts.getValue("A").color,
+            fontSize = 18.sp,
+            lineHeight = 24.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = Display,
+        )
+    }
     Spacer(Modifier.height(20.dp))
     Text(FaultMeaning.getValue(fault), color = Paper, fontSize = 17.sp, lineHeight = 24.sp)
     Spacer(Modifier.height(20.dp))
@@ -681,6 +702,14 @@ private fun Result(model: HarmonicModel) {
         SourceBadge(dx.inferenceSource)
     }
     Spacer(Modifier.height(24.dp))
+    val saved = shown.machineName
+    if (saved != null) {
+        Text("Saved to the history for $saved.", color = Mist, fontSize = 15.sp)
+        Spacer(Modifier.height(14.dp))
+    } else {
+        SaveToHistory(model)
+        Spacer(Modifier.height(20.dp))
+    }
     PrimaryButton("Check again") { model.home() }
     Spacer(Modifier.height(8.dp))
     var details by rememberSaveable { mutableStateOf(false) }
@@ -705,6 +734,190 @@ private fun Result(model: HarmonicModel) {
                 Text("Physics check: ${shown.gate.actions.joinToString { it.action }}", color = Mist, fontSize = 14.sp)
             }
         }
+    }
+}
+
+@Composable
+private fun SaveToHistory(model: HarmonicModel) {
+    var name by rememberSaveable { mutableStateOf(model.suggestedMachineName()) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Panel, RoundedCornerShape(14.dp))
+            .border(1.dp, Line, RoundedCornerShape(14.dp))
+            .padding(16.dp),
+    ) {
+        Text("Keep a history of this machine", color = Paper, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
+        Spacer(Modifier.height(4.dp))
+        Text("Next time, you'll see if it's shaking more or less than today.", color = Mist, fontSize = 15.sp, lineHeight = 21.sp)
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it.take(40) },
+            label = { Text("Machine name, like North well pump") },
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+            modifier = Modifier.fillMaxWidth(),
+            colors = FieldColors,
+            singleLine = true,
+        )
+        Spacer(Modifier.height(12.dp))
+        SecondaryButton("Save this machine", enabled = name.isNotBlank()) { model.saveResultAsMachine(name) }
+    }
+}
+
+// ── Machines and history ─────────────────────────────────────────────────────
+
+private fun verdictFor(zone: String) = Verdicts[zone] ?: Verdicts.getValue("B")
+
+private fun machineLabel(m: Machine): String {
+    val type = Machines.firstOrNull { it.id == m.type }?.label ?: m.type.replaceFirstChar { it.uppercase() }
+    val size = if (m.isoClass == "class_I") "under 20 hp" else "20 hp or more"
+    return "$type · $size"
+}
+
+@Composable
+private fun YourMachines(model: HarmonicModel) {
+    Text("Your machines", color = Paper, fontSize = 24.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
+    Spacer(Modifier.height(12.dp))
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        model.machines.take(6).forEach { m -> MachineRow(m) { model.openMachine(m.id) } }
+    }
+}
+
+@Composable
+private fun MachineRow(m: Machine, onClick: () -> Unit) {
+    val last = m.last
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 64.dp)
+            .background(Panel, RoundedCornerShape(12.dp))
+            .border(1.dp, Line, RoundedCornerShape(12.dp))
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(14.dp).background(last?.let { verdictFor(it.zone).color } ?: Line, CircleShape))
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(m.name, color = Paper, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
+            Text(
+                last?.let { "${verdictFor(it.zone).title} · ${shortDate(it.at)}" } ?: "Not checked yet",
+                color = Mist,
+                fontSize = 15.sp,
+            )
+        }
+        Text("Open", color = Phosphor, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
+    }
+}
+
+@Composable
+private fun ActiveMachineCard(model: HarmonicModel, m: Machine) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Panel, RoundedCornerShape(14.dp))
+            .border(2.dp, Phosphor, RoundedCornerShape(14.dp))
+            .padding(18.dp),
+    ) {
+        Text("Checking", color = Mist, fontSize = 15.sp)
+        Text(m.name, color = Phosphor, fontSize = 28.sp, fontWeight = FontWeight.Black, fontFamily = Display, lineHeight = 32.sp)
+        Text(machineLabel(m), color = Paper, fontSize = 15.sp)
+        m.last?.let {
+            Spacer(Modifier.height(8.dp))
+            Text("Last check ${shortDate(it.at)}: ${verdictFor(it.zone).title}", color = Paper, fontSize = 16.sp)
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        TextButton(onClick = { model.openMachine(m.id) }) {
+            Text("See history", color = Phosphor, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
+        }
+        TextButton(onClick = { model.clearActiveMachine() }) {
+            Text("Check a different machine", color = Phosphor, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
+        }
+    }
+}
+
+@Composable
+private fun MachineHistory(model: HarmonicModel) {
+    val m = model.viewedMachine
+    if (m == null) {
+        Text("That machine is no longer saved.", color = Mist, fontSize = 16.sp)
+        Spacer(Modifier.height(16.dp))
+        SecondaryButton("Back") { model.home() }
+        return
+    }
+    Text(m.name, color = Paper, fontSize = 30.sp, fontWeight = FontWeight.Black, fontFamily = Display, lineHeight = 34.sp)
+    Text(machineLabel(m), color = Mist, fontSize = 16.sp)
+    Spacer(Modifier.height(20.dp))
+    PrimaryButton("Check this machine", enabled = model.sensorOk) { model.checkMachine(m.id) }
+    if (m.readings.size >= 2) {
+        Spacer(Modifier.height(28.dp))
+        Text("Shaking over time", color = Paper, fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
+        Spacer(Modifier.height(10.dp))
+        TrendBars(m.readings.takeLast(12))
+    }
+    Spacer(Modifier.height(28.dp))
+    Text("Past checks", color = Paper, fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
+    Spacer(Modifier.height(6.dp))
+    m.readings.asReversed().forEach { r ->
+        Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(12.dp).background(verdictFor(r.zone).color, CircleShape))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(verdictFor(r.zone).title, color = Paper, fontSize = 17.sp, fontWeight = FontWeight.Bold, fontFamily = Display)
+                Text(FaultName[r.fault] ?: FaultName.getValue("unknown"), color = Mist, fontSize = 15.sp)
+            }
+            Text(shortDate(r.at), color = Mist, fontSize = 15.sp)
+        }
+    }
+    Spacer(Modifier.height(20.dp))
+    SecondaryButton("Back") { model.home() }
+    Spacer(Modifier.height(12.dp))
+    var confirm by remember(m.id) { mutableStateOf(false) }
+    if (!confirm) {
+        TextButton(onClick = { confirm = true }, modifier = Modifier.fillMaxWidth()) {
+            Text("Remove this machine", color = Danger, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        }
+    } else {
+        val n = m.readings.size
+        Notice("Remove ${m.name} and its $n ${if (n == 1) "check" else "checks"} from this phone? This can't be undone.", Danger)
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            SecondaryButton("Keep it", Modifier.weight(1f)) { confirm = false }
+            SecondaryButton("Remove", Modifier.weight(1f)) { model.deleteMachine(m.id) }
+        }
+    }
+}
+
+/** One bar per check, oldest on the left, coloured by verdict and scaled by measured shake. */
+@Composable
+private fun TrendBars(readings: List<Reading>) {
+    val zoneRank = mapOf("A" to 1.0, "B" to 2.0, "C" to 3.0, "D" to 4.0)
+    val values = readings.map { it.shakeMmS ?: zoneRank[it.zone] ?: 1.0 }
+    val peak = values.maxOrNull()?.takeIf { it > 0 } ?: 1.0
+    Canvas(
+        Modifier
+            .fillMaxWidth()
+            .height(96.dp)
+            .semantics { contentDescription = "Shaking over the last ${readings.size} checks" },
+    ) {
+        val slot = size.width / readings.size
+        val barW = (slot * 0.6f).coerceAtMost(48.dp.toPx())
+        readings.forEachIndexed { i, r ->
+            val h = (size.height * (values[i] / peak).toFloat()).coerceAtLeast(size.height * 0.08f)
+            drawRoundRect(
+                verdictFor(r.zone).color,
+                topLeft = Offset(slot * i + (slot - barW) / 2f, size.height - h),
+                size = Size(barW, h),
+                cornerRadius = CornerRadius(barW * 0.2f),
+            )
+        }
+    }
+    Spacer(Modifier.height(4.dp))
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text("Oldest", color = Mist, fontSize = 13.sp)
+        Text("Latest", color = Mist, fontSize = 13.sp)
     }
 }
 
